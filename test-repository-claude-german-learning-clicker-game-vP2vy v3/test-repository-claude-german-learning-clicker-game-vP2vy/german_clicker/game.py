@@ -179,6 +179,10 @@ class Player:
     # Inventář
     gold:      int = 0
     inventory: list = field(default_factory=list)  # list of {"name": str, "icon": str}
+    equipment: dict = field(default_factory=lambda: {
+        "helma": None, "meč": None, "štít": None,
+        "brnění": None, "boty": None, "prsten": None, "náhrdelník": None,
+    })
 
     @property
     def xp_to_next(self) -> int:
@@ -315,6 +319,19 @@ QUEST_DEFS = [
         "reward_items": [{"name": "Netopýří amulet", "icon": "🔮"}],
     },
 ]
+
+# ---------------------------------------------------------------------------
+# Sloty výzbroje  (klíč, výchozí ikona, český název)
+# ---------------------------------------------------------------------------
+EQUIPMENT_SLOT_INFO: dict[str, tuple[str, str]] = {
+    "helma":      ("🪖", "Helma"),
+    "meč":        ("⚔",  "Meč"),
+    "štít":       ("🛡",  "Štít"),
+    "brnění":     ("🦺", "Brnění"),
+    "boty":       ("👢", "Boty"),
+    "prsten":     ("💍", "Prsten"),
+    "náhrdelník": ("📿", "Náhrdelník"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -1395,47 +1412,130 @@ class Game:
         dim.fill((0, 0, 0, 175))
         self.screen.blit(dim, (0, 0))
 
-        # Panel
-        panel = pygame.Rect(SCREEN_W // 2 - 290, 50, 580, 480)
+        # Panel (širší – výzbroj + mřížka předmětů)
+        panel = pygame.Rect(80, 30, 740, 520)
         pygame.draw.rect(self.screen, (38, 28, 52), panel, border_radius=16)
         pygame.draw.rect(self.screen, (90, 65, 110), panel, 2, border_radius=16)
 
         cx = SCREEN_W // 2
 
-        # Titulek
+        # Titulek + zlato
         draw_text_centered(self.screen, "Inventář",
-                           self.f_lg, GOLD, cx, 90)
+                           self.f_lg, GOLD, cx, 60)
+        draw_text_centered(self.screen, f"💰 {self.player.gold}",
+                           self.f_sm, GOLD, cx, 92)
 
-        # Zlato
-        draw_text_left(self.screen, f"💰  Zlato:  {self.player.gold}",
-                       self.f_md, GOLD, cx - 240, 130)
-
-        # Oddělovač
+        # Svislý oddělovač
         pygame.draw.line(self.screen, (90, 65, 110),
-                         (cx - 250, 165), (cx + 250, 165), 1)
+                         (cx, 115), (cx, 510), 1)
 
-        # Předměty
-        draw_text_left(self.screen, "Předměty",
-                       self.f_md, SILVER, cx - 240, 180)
+        mouse = pygame.mouse.get_pos()
 
-        y = 220
-        if not self.player.inventory:
-            draw_text_centered(self.screen, "Prázdný inventář",
-                               self.f_sm, (100, 90, 120), cx, y + 30)
-        else:
-            for item in self.player.inventory:
-                icon = item.get("icon", "?")
-                name = item.get("name", "Neznámý předmět")
-                draw_text_left(self.screen, f"  {icon}  {name}",
-                               self.f_sm, TEXT_LT, cx - 230, y)
-                y += 30
-                if y > 460:
-                    draw_text_left(self.screen, "  ...",
-                                   self.f_sm, (100, 90, 120), cx - 230, y)
-                    break
+        # === LEVÁ STRANA: Výzbroj (paperdoll) ===
+        ecx = 265
+        draw_text_centered(self.screen, "Výzbroj",
+                           self.f_md, SILVER, ecx, 120)
+
+        slot_size = 56
+        row_h = 64
+        base_y = 148
+        col_left   = ecx - slot_size - 4
+        col_right  = ecx + 4
+        col_center = ecx - slot_size // 2
+
+        slot_positions = {
+            "helma":      (col_center, base_y),
+            "meč":        (col_left,   base_y + row_h),
+            "štít":       (col_right,  base_y + row_h),
+            "brnění":     (col_center, base_y + 2 * row_h),
+            "boty":       (col_center, base_y + 3 * row_h),
+            "prsten":     (col_left,   base_y + 4 * row_h),
+            "náhrdelník": (col_right,  base_y + 4 * row_h),
+        }
+
+        hovered_slot = None
+        for slot_name, (sx, sy) in slot_positions.items():
+            rect = pygame.Rect(sx, sy, slot_size, slot_size)
+            equipped = self.player.equipment.get(slot_name)
+
+            bg = (55, 45, 70) if equipped else (30, 22, 40)
+            if rect.collidepoint(mouse):
+                hovered_slot = slot_name
+                bg = tuple(min(255, c + 20) for c in bg)
+
+            pygame.draw.rect(self.screen, bg, rect, border_radius=8)
+            pygame.draw.rect(self.screen, (90, 70, 110), rect, 2, border_radius=8)
+
+            info = EQUIPMENT_SLOT_INFO[slot_name]
+            if equipped:
+                icon = equipped.get("icon", info[0])
+                icon_col = WHITE
+            else:
+                icon = info[0]
+                icon_col = (70, 60, 85)
+
+            draw_text_centered(self.screen, icon, self.f_md,
+                               icon_col, sx + slot_size // 2,
+                               sy + slot_size // 2)
+
+        # Tooltip výzbroje
+        if hovered_slot:
+            info = EQUIPMENT_SLOT_INFO[hovered_slot]
+            equipped = self.player.equipment.get(hovered_slot)
+            if equipped:
+                tip = f"{info[1]}: {equipped.get('name', '?')}"
+            else:
+                tip = f"{info[1]}: prázdné"
+            draw_text_centered(self.screen, tip, self.f_xs,
+                               TEXT_LT, ecx, base_y + 5 * row_h + 12)
+
+        # === PRAVÁ STRANA: Mřížka předmětů 3×4 ===
+        grid_cx = 635
+        draw_text_centered(self.screen, "Předměty",
+                           self.f_md, SILVER, grid_cx, 120)
+
+        cell = 56
+        gap = 6
+        grid_w = 3 * cell + 2 * gap
+        grid_x = grid_cx - grid_w // 2
+        grid_y = 155
+        hovered_item_name = None
+
+        for row in range(4):
+            for col in range(3):
+                idx = row * 3 + col
+                x = grid_x + col * (cell + gap)
+                y = grid_y + row * (cell + gap)
+                r = pygame.Rect(x, y, cell, cell)
+
+                if idx < len(self.player.inventory):
+                    item = self.player.inventory[idx]
+                    bg = (55, 45, 70)
+                    if r.collidepoint(mouse):
+                        bg = (75, 62, 90)
+                        hovered_item_name = item.get("name", "?")
+                    pygame.draw.rect(self.screen, bg, r, border_radius=8)
+                    pygame.draw.rect(self.screen, (90, 70, 110), r, 2,
+                                     border_radius=8)
+                    icon = item.get("icon", "?")
+                    draw_text_centered(self.screen, icon, self.f_md,
+                                       WHITE, x + cell // 2, y + cell // 2)
+                else:
+                    pygame.draw.rect(self.screen, (30, 22, 40), r,
+                                     border_radius=8)
+                    pygame.draw.rect(self.screen, (60, 48, 75), r, 1,
+                                     border_radius=8)
+
+        # Počet předmětů + hover název
+        bottom_y = grid_y + 4 * (cell + gap) + 8
+        count = len(self.player.inventory)
+        draw_text_centered(self.screen, f"{count}/12",
+                           self.f_xs, (100, 90, 120), grid_cx, bottom_y)
+        if hovered_item_name:
+            draw_text_centered(self.screen, hovered_item_name,
+                               self.f_xs, TEXT_LT, grid_cx, bottom_y + 18)
 
         # Zavřít
-        mouse = pygame.mouse.get_pos()
         self._inv_close_btn.draw(self.screen, mouse)
 
     # ===================================================================
