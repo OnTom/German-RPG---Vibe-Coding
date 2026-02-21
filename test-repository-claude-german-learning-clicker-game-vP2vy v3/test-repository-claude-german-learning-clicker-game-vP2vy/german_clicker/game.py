@@ -163,13 +163,30 @@ class Player:
     hp:        int  = 100
     max_hp:    int  = 100
     attack:    int  = 28
+    defense:   int  = 5
     xp:        int  = 0
     level:     int  = 1
     defending: bool = False
 
+    # Dovednosti
+    skill_points:  int = 0
+    sila:          int = 0   # síla – bonus k útoku
+    charisma:      int = 0
+    moudrost:      int = 0   # moudrost
+    houzevnatost:  int = 0   # houževnatost – bonus k obraně
+    agility:       int = 0
+
     @property
     def xp_to_next(self) -> int:
         return self.level * 80
+
+    @property
+    def effective_attack(self) -> int:
+        return self.attack + self.sila * 3
+
+    @property
+    def effective_defense(self) -> int:
+        return self.defense + self.houzevnatost * 2
 
     def try_level_up(self) -> bool:
         if self.xp >= self.xp_to_next:
@@ -178,6 +195,7 @@ class Player:
             self.max_hp += 15
             self.hp      = self.max_hp
             self.attack  += 5
+            self.skill_points += 1
             return True
         return False
 
@@ -247,6 +265,7 @@ class Phase(Enum):
     MENU             = "menu"
     CAMP             = "camp"
     CAMP_NPC         = "camp_npc"
+    STATS            = "stats"
     MAP              = "map"
     PLAYER_CHOOSE    = "player_choose"
     PLAYER_TRANSLATE = "player_translate"
@@ -395,8 +414,59 @@ class Game:
             pygame.Rect(cx - 210, 523, 420, 42), self.f_md,
             placeholder="Napiš německy a stiskni Enter…")
 
+        # ---- Stats tlačítko (pravý horní roh kempu) ----
+        self.btn_stats = Button(
+            pygame.Rect(SCREEN_W - 160, 10, 150, 42),
+            "📊  Staty", self.f_sm,
+            base_color=(80, 65, 110), hover_color=(110, 90, 150))
+
+        # ---- Stats panel – tlačítka pro přidělení dovednostních bodů ----
+        self._stats_skill_buttons: list[Button] = []
+        self._stats_close_btn: Button | None = None
+        self._build_stats_buttons()
+
         # ---- Zpráva ----
         self.message = MessageOverlay(self.f_lg)
+
+    # ------------------------------------------------------------------
+    # Stats panel – budování tlačítek
+    # ------------------------------------------------------------------
+    # Definice dovedností: (attr_name, label, popis)
+    SKILL_DEFS = [
+        ("sila",         "Síla",         "+3 útok"),
+        ("charisma",     "Charisma",     "sociální bonus"),
+        ("moudrost",     "Moudrost",     "vědomosti"),
+        ("houzevnatost", "Houževnatost", "+2 obrana"),
+        ("agility",      "Agility",      "rychlost"),
+    ]
+
+    def _build_stats_buttons(self) -> None:
+        """Vytvoří + tlačítka pro přidělení dovednostních bodů."""
+        cx = SCREEN_W // 2
+        self._stats_skill_buttons = []
+
+        btn_y = 310
+        for attr_name, label, _desc in self.SKILL_DEFS:
+            btn = Button(
+                pygame.Rect(cx + 140, btn_y - 14, 36, 28),
+                "+", self.f_sm,
+                base_color=(60, 120, 60), hover_color=(80, 160, 80))
+            btn._skill_attr = attr_name  # type: ignore[attr-defined]
+            self._stats_skill_buttons.append(btn)
+            btn_y += 36
+
+        self._stats_close_btn = Button(
+            pygame.Rect(cx - 80, btn_y + 10, 160, 42),
+            "Zavřít", self.f_sm,
+            base_color=(90, 55, 55), hover_color=(125, 75, 75))
+
+    def _handle_skill_up(self, attr_name: str) -> None:
+        """Přidělí jeden dovednostní bod dané dovednosti."""
+        if self.player.skill_points <= 0:
+            return
+        self.player.skill_points -= 1
+        current = getattr(self.player, attr_name)
+        setattr(self.player, attr_name, current + 1)
 
     # ------------------------------------------------------------------
     # Nová hra / start bitvy
@@ -515,7 +585,9 @@ class Game:
 
             # ---------- CAMP ----------
             elif self.phase == Phase.CAMP:
-                if self.btn_merchant.handle_event(event):
+                if self.btn_stats.handle_event(event):
+                    self.phase = Phase.STATS
+                elif self.btn_merchant.handle_event(event):
                     self._open_npc("obchodnik")
                 elif self.btn_blacksmith.handle_event(event):
                     self._open_npc("kovar")
@@ -523,6 +595,17 @@ class Game:
                     self._open_npc("starosta")
                 elif self.btn_leave.handle_event(event):
                     self.phase = Phase.MAP
+
+            # ---------- STATS ----------
+            elif self.phase == Phase.STATS:
+                for btn in self._stats_skill_buttons:
+                    if btn.handle_event(event):
+                        self._handle_skill_up(
+                            btn._skill_attr)  # type: ignore[attr-defined]
+                if self._stats_close_btn and self._stats_close_btn.handle_event(event):
+                    self.phase = Phase.CAMP
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    self.phase = Phase.CAMP
 
             # ---------- CAMP NPC ----------
             elif self.phase == Phase.CAMP_NPC:
@@ -578,7 +661,7 @@ class Game:
         self.text_input.update(dt)
 
         # Campfire animace
-        if self.phase in (Phase.CAMP, Phase.CAMP_NPC):
+        if self.phase in (Phase.CAMP, Phase.CAMP_NPC, Phase.STATS):
             self._fire_timer += dt
             if self._fire_timer >= FIRE_FRAME_MS:
                 self._fire_timer = 0
@@ -622,7 +705,7 @@ class Game:
 
         if correct:
             if self.player_action == "attack":
-                dmg = self.player.attack
+                dmg = self.player.effective_attack
                 if self.enemy.defending:
                     dmg = dmg // 2
                     self._add_log(f"Správně! Nepřítel se bránil – {dmg} poškození.")
@@ -659,7 +742,7 @@ class Game:
     def _resolve_enemy_turn(self) -> None:
         self.enemy.defending = False
         if random.random() < 0.60:
-            dmg = self.enemy.attack
+            dmg = max(1, self.enemy.attack - self.player.effective_defense)
             if self.player.defending:
                 dmg = dmg // 2
                 self._add_log(
@@ -703,11 +786,13 @@ class Game:
         if self.phase == Phase.MENU:
             self._draw_cave_bg()
             self._draw_menu()
-        elif self.phase in (Phase.CAMP, Phase.CAMP_NPC):
+        elif self.phase in (Phase.CAMP, Phase.CAMP_NPC, Phase.STATS):
             self._draw_camp_bg()
             self._draw_camp_ui()
             if self.phase == Phase.CAMP_NPC:
                 self._draw_npc_overlay()
+            elif self.phase == Phase.STATS:
+                self._draw_stats_overlay()
         elif self.phase == Phase.MAP:
             self._draw_map()
         else:
@@ -860,6 +945,17 @@ class Game:
                        self.f_xs, SILVER, 20, h - 60)
 
         mouse = pygame.mouse.get_pos()
+
+        # Stats tlačítko – pravý horní roh
+        self.btn_stats.draw(self.screen, mouse)
+        # Indikátor dostupných bodů
+        if self.player.skill_points > 0:
+            badge_x = self.btn_stats.rect.right - 8
+            badge_y = self.btn_stats.rect.top - 4
+            pygame.draw.circle(self.screen, (220, 60, 60), (badge_x, badge_y), 10)
+            draw_text_centered(self.screen, str(self.player.skill_points),
+                               self.f_xs, WHITE, badge_x, badge_y)
+
         self.btn_merchant.draw(self.screen, mouse)
         self.btn_blacksmith.draw(self.screen, mouse)
         self.btn_mayor.draw(self.screen, mouse)
@@ -917,6 +1013,103 @@ class Game:
         # Zavřít
         if self._npc_close_btn:
             self._npc_close_btn.draw(self.screen, mouse)
+
+    # ===================================================================
+    # STATS – overlay panel
+    # ===================================================================
+    def _draw_stats_overlay(self) -> None:
+        # Stmívací overlay
+        dim = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 165))
+        self.screen.blit(dim, (0, 0))
+
+        # Panel
+        panel = pygame.Rect(SCREEN_W // 2 - 290, 50, 580, 480)
+        pygame.draw.rect(self.screen, (38, 28, 52), panel, border_radius=16)
+        pygame.draw.rect(self.screen, (90, 65, 110), panel, 2, border_radius=16)
+
+        cx = SCREEN_W // 2
+        p = self.player
+
+        # Titulek
+        draw_text_centered(self.screen, "Statistiky a dovednosti",
+                           self.f_lg, GOLD, cx, 90)
+
+        # --- Základní staty ---
+        y = 135
+        draw_text_left(self.screen, "Základní staty",
+                       self.f_md, SILVER, cx - 250, y)
+        y += 35
+
+        # Útok
+        draw_text_left(self.screen, f"⚔  Síla útoku:",
+                       self.f_sm, TEXT_LT, cx - 240, y)
+        atk_text = f"{p.effective_attack}"
+        if p.sila > 0:
+            atk_text += f"  ({p.attack} + {p.sila * 3})"
+        draw_text_left(self.screen, atk_text,
+                       self.f_sm, CORRECT_COLOR, cx + 40, y)
+        y += 28
+
+        # Obrana
+        draw_text_left(self.screen, f"🛡  Síla obrany:",
+                       self.f_sm, TEXT_LT, cx - 240, y)
+        def_text = f"{p.effective_defense}"
+        if p.houzevnatost > 0:
+            def_text += f"  ({p.defense} + {p.houzevnatost * 2})"
+        draw_text_left(self.screen, def_text,
+                       self.f_sm, (100, 160, 220), cx + 40, y)
+        y += 28
+
+        # HP
+        draw_text_left(self.screen, f"❤  Životy:",
+                       self.f_sm, TEXT_LT, cx - 240, y)
+        draw_text_left(self.screen, f"{p.hp}/{p.max_hp}",
+                       self.f_sm, (220, 80, 80), cx + 40, y)
+
+        # --- Oddělovač ---
+        y += 38
+        pygame.draw.line(self.screen, (90, 65, 110),
+                         (cx - 250, y), (cx + 250, y), 1)
+
+        # --- Dovednosti ---
+        y += 12
+        draw_text_left(self.screen, "Dovednosti",
+                       self.f_md, SILVER, cx - 250, y)
+
+        # Dostupné body
+        pts_color = GOLD if p.skill_points > 0 else (100, 90, 120)
+        draw_text_left(self.screen, f"Body: {p.skill_points}",
+                       self.f_sm, pts_color, cx + 120, y + 4)
+
+        y += 40
+        mouse = pygame.mouse.get_pos()
+        for i, (attr_name, label, desc) in enumerate(self.SKILL_DEFS):
+            val = getattr(p, attr_name)
+
+            # Název dovednosti
+            draw_text_left(self.screen, f"{label}:",
+                           self.f_sm, TEXT_LT, cx - 240, y)
+
+            # Hodnota
+            draw_text_left(self.screen, str(val),
+                           self.f_sm, GOLD, cx + 50, y)
+
+            # Popis
+            draw_text_left(self.screen, f"({desc})",
+                           self.f_xs, (120, 110, 140), cx + 80, y + 3)
+
+            # + tlačítko
+            btn = self._stats_skill_buttons[i]
+            btn.rect.y = y - 3
+            btn.enabled = p.skill_points > 0
+            btn.draw(self.screen, mouse)
+
+            y += 36
+
+        # Zavřít
+        if self._stats_close_btn:
+            self._stats_close_btn.draw(self.screen, mouse)
 
     # ===================================================================
     # MAPA
