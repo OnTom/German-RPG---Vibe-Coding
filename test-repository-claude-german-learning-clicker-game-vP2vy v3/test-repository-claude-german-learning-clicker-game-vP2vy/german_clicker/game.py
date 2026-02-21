@@ -275,16 +275,46 @@ NPC_DATA: dict[str, dict] = {
     "starosta": {
         "name":  "Starosta Václav",
         "color": (80, 110, 175),
-        "text":  (
-            "Hrdino! Naše vesnice je v ohrožení.\n"
-            "Podivná stvoření přicházejí z jeskyně.\n"
-            "Poraz jejich vůdce a zachráníš nás!\n\n"
-            "Za každého nepřítele dostaneš zkušenosti.\n"
-            "Ty pak můžeš utratit u obchodníka nebo kováře."
-        ),
+        "text":  "Hrdino! Mám pro tebe úkoly.\nSplň je a budeš odměněn!",
         "items": [],
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# Úkoly starosty
+# ---------------------------------------------------------------------------
+QUEST_DEFS = [
+    {
+        "id": "kill_spiders",
+        "name": "Zabij 2 pavouky",
+        "type": "kill",
+        "target_enemy": "Pavouk",
+        "target_count": 2,
+        "reward_gold": 15,
+        "reward_xp": 50,
+        "reward_items": [],
+    },
+    {
+        "id": "collect_gold",
+        "name": "Získej 10 zlaťáků",
+        "type": "gold",
+        "target_count": 10,
+        "reward_gold": 20,
+        "reward_xp": 40,
+        "reward_items": [],
+    },
+    {
+        "id": "bat_corpses",
+        "name": "Dones 3 mrtvoly netopýrů",
+        "type": "item",
+        "target_item": "Mrtvola netopýra",
+        "target_count": 3,
+        "reward_gold": 25,
+        "reward_xp": 60,
+        "reward_items": [{"name": "Netopýří amulet", "icon": "🔮"}],
+    },
+]
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +415,10 @@ class Game:
         # Loot – dočasný loot ke zobrazení
         self._loot_gold:  int  = 0
         self._loot_items: list = []
+
+        # Úkoly starosty
+        self._kill_counts: dict[str, int] = {}
+        self._quests_claimed: list[bool] = [False] * len(QUEST_DEFS)
 
         # Sestavení UI
         self._build_ui()
@@ -542,6 +576,54 @@ class Game:
         self.phase = Phase.VICTORY
 
     # ------------------------------------------------------------------
+    # Úkoly starosty
+    # ------------------------------------------------------------------
+    def _get_quest_progress(self, quest: dict) -> tuple[int, int]:
+        """Vrátí (aktuální, cíl) pro daný úkol."""
+        target = quest["target_count"]
+        if quest["type"] == "kill":
+            current = self._kill_counts.get(quest["target_enemy"], 0)
+        elif quest["type"] == "gold":
+            current = self.player.gold
+        elif quest["type"] == "item":
+            current = sum(1 for item in self.player.inventory
+                          if item["name"] == quest["target_item"])
+        else:
+            current = 0
+        return min(current, target), target
+
+    def _claim_quest(self, quest_idx: int) -> None:
+        """Vyzvedne odměnu za splněný úkol."""
+        quest = QUEST_DEFS[quest_idx]
+        progress, target = self._get_quest_progress(quest)
+        if progress < target or self._quests_claimed[quest_idx]:
+            return
+
+        # Odebrat požadované předměty z inventáře (typ "item")
+        if quest["type"] == "item":
+            to_remove = quest["target_count"]
+            new_inv = []
+            for item in self.player.inventory:
+                if item["name"] == quest["target_item"] and to_remove > 0:
+                    to_remove -= 1
+                else:
+                    new_inv.append(item)
+            self.player.inventory = new_inv
+
+        # Odměny
+        self.player.gold += quest["reward_gold"]
+        self.player.xp += quest["reward_xp"]
+        for item in quest["reward_items"]:
+            self.player.inventory.append(dict(item))
+        self.player.try_level_up()
+
+        self._quests_claimed[quest_idx] = True
+        self._npc_feedback = f"Úkol splněn! +{quest['reward_gold']} 💰, +{quest['reward_xp']} XP"
+        self._npc_feedback_timer = 2500
+        # Refresh tlačítek
+        self._build_npc_buttons()
+
+    # ------------------------------------------------------------------
     # Nová hra / start bitvy
     # ------------------------------------------------------------------
     def _new_game(self) -> None:
@@ -550,6 +632,8 @@ class Game:
         self.enemy       = _make_enemy(ENEMY_SEQUENCE[0], 1)
         self.battle_log  = []
         self._level_up_flag = False
+        self._kill_counts = {}
+        self._quests_claimed = [False] * len(QUEST_DEFS)
         self._sync_hp_bars()
         self.phase = Phase.CAMP
 
@@ -585,21 +669,51 @@ class Game:
 
     def _build_npc_buttons(self) -> None:
         data  = NPC_DATA[self.current_npc]
-        items = data["items"]
         self._npc_buttons = []
 
         panel_cx = SCREEN_W // 2
-        btn_y    = 390
-        for item in items:
-            lbl = f"{item['label']}   [{item['cost']} XP]"
-            btn = Button(
-                pygame.Rect(panel_cx - 260, btn_y, 520, 46),
-                lbl, self.f_sm,
-                base_color=(70, 90, 130), hover_color=(95, 120, 170))
-            btn._action = item["action"]  # type: ignore[attr-defined]
-            btn._cost   = item["cost"]    # type: ignore[attr-defined]
-            self._npc_buttons.append(btn)
-            btn_y += 58
+
+        if self.current_npc == "starosta":
+            # Úkoly starosty
+            btn_y = 310
+            for i, quest in enumerate(QUEST_DEFS):
+                progress, target = self._get_quest_progress(quest)
+                is_complete = progress >= target
+                is_claimed = self._quests_claimed[i]
+
+                if is_claimed:
+                    lbl = f"✓  {quest['name']}  [Splněno]"
+                    base_c, hover_c = (50, 80, 50), (50, 80, 50)
+                elif is_complete:
+                    lbl = f"★  {quest['name']}  [Vyzvednout!]"
+                    base_c, hover_c = (60, 120, 60), (80, 160, 80)
+                else:
+                    lbl = f"○  {quest['name']}  [{progress}/{target}]"
+                    base_c, hover_c = (60, 55, 75), (60, 55, 75)
+
+                btn = Button(
+                    pygame.Rect(panel_cx - 260, btn_y, 520, 46),
+                    lbl, self.f_sm,
+                    base_color=base_c, hover_color=hover_c)
+                btn._action = f"claim_quest_{i}"  # type: ignore[attr-defined]
+                btn._cost   = 0                    # type: ignore[attr-defined]
+                btn.enabled = is_complete and not is_claimed
+                self._npc_buttons.append(btn)
+                btn_y += 56
+        else:
+            # Obchodník / kovář – platba zlaťáky
+            items = data["items"]
+            btn_y = 390
+            for item in items:
+                lbl = f"{item['label']}   [{item['cost']} 💰]"
+                btn = Button(
+                    pygame.Rect(panel_cx - 260, btn_y, 520, 46),
+                    lbl, self.f_sm,
+                    base_color=(70, 90, 130), hover_color=(95, 120, 170))
+                btn._action = item["action"]  # type: ignore[attr-defined]
+                btn._cost   = item["cost"]    # type: ignore[attr-defined]
+                self._npc_buttons.append(btn)
+                btn_y += 58
 
         self._npc_close_btn = Button(
             pygame.Rect(panel_cx - 100, btn_y + 4, 200, 44),
@@ -607,11 +721,18 @@ class Game:
             base_color=(90, 55, 55), hover_color=(125, 75, 75))
 
     def _handle_npc_action(self, action: str, cost: int) -> None:
-        if self.player.xp < cost:
-            self._npc_feedback = "Nedostatek XP!"
+        # Úkoly starosty
+        if action.startswith("claim_quest_"):
+            quest_idx = int(action.split("_")[-1])
+            self._claim_quest(quest_idx)
+            return
+
+        # Platba zlaťáky
+        if self.player.gold < cost:
+            self._npc_feedback = "Nedostatek zlata!"
             self._npc_feedback_timer = 1800
             return
-        self.player.xp -= cost
+        self.player.gold -= cost
         if action == "heal_30":
             healed = min(30, self.player.max_hp - self.player.hp)
             self.player.hp += healed
@@ -823,6 +944,9 @@ class Game:
             xp_gain = self.enemy.xp_reward
             self.player.xp += xp_gain
             self._level_up_flag = self.player.try_level_up()
+            # Počítadlo zabití pro úkoly
+            self._kill_counts[self.enemy.name] = (
+                self._kill_counts.get(self.enemy.name, 0) + 1)
             self._add_log(f"Nepřítel {self.enemy.name} poražen! +{xp_gain} XP.")
             self.message.show(f"Vítězství!  +{xp_gain} XP", GOLD)
             # Příprava loot obrazovky
@@ -1083,15 +1207,16 @@ class Game:
         dim.fill((0, 0, 0, 165))
         self.screen.blit(dim, (0, 0))
 
-        # Panel
-        panel = pygame.Rect(SCREEN_W // 2 - 290, 95, 580, 420)
+        # Panel – vyšší pro starostu (kvůli úkolům)
+        panel_h = 460 if self.current_npc == "starosta" else 420
+        panel = pygame.Rect(SCREEN_W // 2 - 290, 55, 580, panel_h)
         pygame.draw.rect(self.screen, (38, 28, 52), panel, border_radius=16)
         pygame.draw.rect(self.screen, (90, 65, 110), panel, 2, border_radius=16)
 
         cx = SCREEN_W // 2
 
         # Portrét NPC (barevný kruh s iniciálou)
-        port_x, port_y, port_r = cx, 150, 36
+        port_x, port_y, port_r = cx, 110, 36
         pygame.draw.circle(self.screen, data["color"], (port_x, port_y), port_r)
         pygame.draw.circle(self.screen, WHITE, (port_x, port_y), port_r, 2)
         init = data["name"][0]
@@ -1099,30 +1224,69 @@ class Game:
 
         # Jméno NPC
         draw_text_centered(self.screen, data["name"], self.f_md,
-                           GOLD, cx, 202)
+                           GOLD, cx, 162)
 
         # Dialog text (podpora víceřádkového textu)
         lines = data["text"].split("\n")
-        ty = 238
+        ty = 192
         for line in lines:
             draw_text_centered(self.screen, line, self.f_xs, TEXT_LT, cx, ty)
             ty += 20
 
-        # Shop tlačítka
         mouse = pygame.mouse.get_pos()
-        for btn in self._npc_buttons:
-            btn.draw(self.screen, mouse)
+
+        if self.current_npc == "starosta":
+            # Oddělovač
+            sep_y = 235
+            pygame.draw.line(self.screen, (90, 65, 110),
+                             (cx - 250, sep_y), (cx + 250, sep_y), 1)
+
+            # Nadpis úkolů
+            draw_text_left(self.screen, "Úkoly",
+                           self.f_md, SILVER, cx - 240, sep_y + 10)
+
+            # Detaily ke každému úkolu + tlačítka
+            qy = sep_y + 48
+            for i, quest in enumerate(QUEST_DEFS):
+                progress, target = self._get_quest_progress(quest)
+                is_claimed = self._quests_claimed[i]
+                is_complete = progress >= target
+
+                # Odměna popis
+                reward_parts = []
+                if quest["reward_gold"]:
+                    reward_parts.append(f"{quest['reward_gold']} 💰")
+                if quest["reward_xp"]:
+                    reward_parts.append(f"{quest['reward_xp']} XP")
+                for ri in quest["reward_items"]:
+                    reward_parts.append(f"{ri['icon']} {ri['name']}")
+                reward_str = "Odměna: " + ", ".join(reward_parts)
+
+                draw_text_left(self.screen, reward_str,
+                               self.f_xs, (140, 130, 100), cx - 240, qy + 4)
+
+                # Tlačítko
+                if i < len(self._npc_buttons):
+                    self._npc_buttons[i].rect.y = qy + 22
+                    self._npc_buttons[i].draw(self.screen, mouse)
+
+                qy += 76
+        else:
+            # Shop tlačítka
+            for btn in self._npc_buttons:
+                btn.draw(self.screen, mouse)
 
         # Feedback zpráva
         if self._npc_feedback and self._npc_feedback_timer > 0:
-            alpha = min(255, int(255 * self._npc_feedback_timer / 2000))
+            alpha = min(255, int(255 * self._npc_feedback_timer / 2500))
             feedback_surf = self.f_sm.render(self._npc_feedback, True, CORRECT_COLOR)
             feedback_surf.set_alpha(alpha)
-            fb_rect = feedback_surf.get_rect(center=(cx, 470))
+            fb_rect = feedback_surf.get_rect(center=(cx, panel.bottom - 30))
             self.screen.blit(feedback_surf, fb_rect)
 
         # Zavřít
         if self._npc_close_btn:
+            self._npc_close_btn.rect.y = panel.bottom + 8
             self._npc_close_btn.draw(self.screen, mouse)
 
     # ===================================================================
