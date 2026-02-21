@@ -10,7 +10,7 @@ Stavový automat:
 import pygame
 import random
 from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from words import CATEGORIES
 from ui import (
@@ -176,6 +176,10 @@ class Player:
     houzevnatost:  int = 0   # houževnatost – bonus k obraně
     agility:       int = 0
 
+    # Inventář
+    gold:      int = 0
+    inventory: list = field(default_factory=list)  # list of {"name": str, "icon": str}
+
     @property
     def xp_to_next(self) -> int:
         return self.level * 80
@@ -208,16 +212,41 @@ class Enemy:
     attack:    int
     xp_reward: int
     defending: bool = False
+    loot_gold: int  = 0
+    loot_items: list = field(default_factory=list)  # list of {"name": str, "icon": str}
+
+
+# Názvy mrtvol nepřátel
+_CORPSE_NAMES: dict[str, str] = {
+    "Šnek":      "Mrtvola šneka",
+    "Pavouk":    "Mrtvola pavouka",
+    "Ještěrka":  "Mrtvola ještěrky",
+    "Netopýr":   "Mrtvola netopýra",
+    "Drak":      "Mrtvola draka",
+}
+
+_CORPSE_ICONS: dict[str, str] = {
+    "Šnek":      "🐌",
+    "Pavouk":    "🕷",
+    "Ještěrka":  "🦎",
+    "Netopýr":   "🦇",
+    "Drak":      "🐉",
+}
 
 
 def _make_enemy(name: str, player_level: int) -> Enemy:
     base_hp  = 50 + (player_level - 1) * 20
     base_atk = 18 + (player_level - 1) * 5
+    gold = random.randint(1, 5)
+    corpse_name = _CORPSE_NAMES.get(name, f"Mrtvola: {name}")
+    corpse_icon = _CORPSE_ICONS.get(name, "💀")
     return Enemy(
         name=name,
         hp=base_hp, max_hp=base_hp,
         attack=base_atk,
         xp_reward=30 + (player_level - 1) * 15,
+        loot_gold=gold,
+        loot_items=[{"name": corpse_name, "icon": corpse_icon}],
     )
 
 
@@ -266,12 +295,14 @@ class Phase(Enum):
     CAMP             = "camp"
     CAMP_NPC         = "camp_npc"
     STATS            = "stats"
+    INVENTORY        = "inventory"
     MAP              = "map"
     PLAYER_CHOOSE    = "player_choose"
     PLAYER_TRANSLATE = "player_translate"
     RESOLVE_PLAYER   = "resolve_player"
     ENEMY_TURN       = "enemy_turn"
     RESOLVE_ENEMY    = "resolve_enemy"
+    LOOT             = "loot"
     VICTORY          = "victory"
     GAME_OVER        = "game_over"
 
@@ -348,6 +379,13 @@ class Game:
         # Mapa – hover
         self._map_hover: str | None = None
 
+        # Inventář – fáze, ze které se otevřel (pro návrat)
+        self._inv_return_phase: Phase = Phase.CAMP
+
+        # Loot – dočasný loot ke zobrazení
+        self._loot_gold:  int  = 0
+        self._loot_items: list = []
+
         # Sestavení UI
         self._build_ui()
 
@@ -414,11 +452,29 @@ class Game:
             pygame.Rect(cx - 210, 523, 420, 42), self.f_md,
             placeholder="Napiš německy a stiskni Enter…")
 
-        # ---- Stats tlačítko (pravý horní roh kempu) ----
+        # ---- Stats tlačítko (pravý horní roh) ----
         self.btn_stats = Button(
             pygame.Rect(SCREEN_W - 160, 10, 150, 42),
             "📊  Staty", self.f_sm,
             base_color=(80, 65, 110), hover_color=(110, 90, 150))
+
+        # ---- Inventář tlačítko (vedle stats) ----
+        self.btn_inventory = Button(
+            pygame.Rect(SCREEN_W - 320, 10, 150, 42),
+            "🎒  Inventář", self.f_sm,
+            base_color=(100, 80, 50), hover_color=(135, 110, 70))
+
+        # ---- Inventář panel – zavřít ----
+        self._inv_close_btn = Button(
+            pygame.Rect(SCREEN_W // 2 - 80, 480, 160, 42),
+            "Zavřít", self.f_sm,
+            base_color=(90, 55, 55), hover_color=(125, 75, 75))
+
+        # ---- Loot panel – sebrat vše ----
+        self._loot_collect_btn = Button(
+            pygame.Rect(SCREEN_W // 2 - 120, 430, 240, 48),
+            "Sebrat vše", self.f_md,
+            base_color=(60, 120, 60), hover_color=(80, 160, 80))
 
         # ---- Stats panel – tlačítka pro přidělení dovednostních bodů ----
         self._stats_skill_buttons: list[Button] = []
@@ -467,6 +523,23 @@ class Game:
         self.player.skill_points -= 1
         current = getattr(self.player, attr_name)
         setattr(self.player, attr_name, current + 1)
+
+    # ------------------------------------------------------------------
+    # Inventář
+    # ------------------------------------------------------------------
+    def _open_inventory(self) -> None:
+        """Otevře inventář z jakékoli obrazovky."""
+        self._inv_return_phase = self.phase
+        self.phase = Phase.INVENTORY
+
+    def _collect_loot(self) -> None:
+        """Sebere loot z mrtvého nepřítele do inventáře hráče."""
+        self.player.gold += self._loot_gold
+        for item in self._loot_items:
+            self.player.inventory.append(item)
+        self._loot_gold  = 0
+        self._loot_items = []
+        self.phase = Phase.VICTORY
 
     # ------------------------------------------------------------------
     # Nová hra / start bitvy
@@ -585,7 +658,9 @@ class Game:
 
             # ---------- CAMP ----------
             elif self.phase == Phase.CAMP:
-                if self.btn_stats.handle_event(event):
+                if self.btn_inventory.handle_event(event):
+                    self._open_inventory()
+                elif self.btn_stats.handle_event(event):
                     self.phase = Phase.STATS
                 elif self.btn_merchant.handle_event(event):
                     self._open_npc("obchodnik")
@@ -607,6 +682,13 @@ class Game:
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     self.phase = Phase.CAMP
 
+            # ---------- INVENTORY ----------
+            elif self.phase == Phase.INVENTORY:
+                if self._inv_close_btn.handle_event(event):
+                    self.phase = self._inv_return_phase
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    self.phase = self._inv_return_phase
+
             # ---------- CAMP NPC ----------
             elif self.phase == Phase.CAMP_NPC:
                 for btn in self._npc_buttons:
@@ -618,7 +700,9 @@ class Game:
 
             # ---------- MAP ----------
             elif self.phase == Phase.MAP:
-                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if self.btn_inventory.handle_event(event):
+                    self._open_inventory()
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     for loc in MAP_LOCATIONS:
                         dx = mouse[0] - loc["pos"][0]
                         dy = mouse[1] - loc["pos"][1]
@@ -633,7 +717,9 @@ class Game:
 
             # ---------- BATTLE FÁZE 1 ----------
             elif self.phase == Phase.PLAYER_CHOOSE:
-                if self.btn_attack.handle_event(event):
+                if self.btn_inventory.handle_event(event):
+                    self._open_inventory()
+                elif self.btn_attack.handle_event(event):
                     self.player_action = "attack"
                     self.phase = Phase.PLAYER_TRANSLATE
                 elif self.btn_defend.handle_event(event):
@@ -644,6 +730,11 @@ class Game:
             elif self.phase == Phase.PLAYER_TRANSLATE:
                 if self.text_input.handle_event(event):
                     self._submit_translation()
+
+            # ---------- LOOT ----------
+            elif self.phase == Phase.LOOT:
+                if self._loot_collect_btn.handle_event(event):
+                    self._collect_loot()
 
             # ---------- VICTORY / GAME OVER ----------
             elif self.phase in (Phase.VICTORY, Phase.GAME_OVER):
@@ -661,7 +752,7 @@ class Game:
         self.text_input.update(dt)
 
         # Campfire animace
-        if self.phase in (Phase.CAMP, Phase.CAMP_NPC, Phase.STATS):
+        if self.phase in (Phase.CAMP, Phase.CAMP_NPC, Phase.STATS, Phase.INVENTORY):
             self._fire_timer += dt
             if self._fire_timer >= FIRE_FRAME_MS:
                 self._fire_timer = 0
@@ -734,7 +825,10 @@ class Game:
             self._level_up_flag = self.player.try_level_up()
             self._add_log(f"Nepřítel {self.enemy.name} poražen! +{xp_gain} XP.")
             self.message.show(f"Vítězství!  +{xp_gain} XP", GOLD)
-            self.phase = Phase.VICTORY
+            # Příprava loot obrazovky
+            self._loot_gold  = self.enemy.loot_gold
+            self._loot_items = list(self.enemy.loot_items)
+            self.phase = Phase.LOOT
         else:
             self.phase        = Phase.ENEMY_TURN
             self._enemy_delay = ENEMY_TURN_DELAY
@@ -793,10 +887,21 @@ class Game:
                 self._draw_npc_overlay()
             elif self.phase == Phase.STATS:
                 self._draw_stats_overlay()
+        elif self.phase == Phase.INVENTORY:
+            # Vykreslíme pozadí podle původní fáze
+            if self._inv_return_phase in (Phase.CAMP, Phase.CAMP_NPC, Phase.STATS):
+                self._draw_camp_bg()
+                self._draw_camp_ui()
+            elif self._inv_return_phase == Phase.MAP:
+                self._draw_map()
+            else:
+                self._draw_cave_bg()
+                self._draw_battle()
+            self._draw_inventory_overlay()
         elif self.phase == Phase.MAP:
             self._draw_map()
         else:
-            # Battle phases
+            # Battle phases (including LOOT)
             self._draw_cave_bg()
             self._draw_battle()
 
@@ -945,6 +1050,12 @@ class Game:
                        self.f_xs, SILVER, 20, h - 60)
 
         mouse = pygame.mouse.get_pos()
+
+        # Inventář tlačítko – pravý horní roh
+        self.btn_inventory.draw(self.screen, mouse)
+        # Zlato vedle inventáře
+        draw_text_left(self.screen, f"💰 {self.player.gold}",
+                       self.f_xs, GOLD, SCREEN_W - 320, 56)
 
         # Stats tlačítko – pravý horní roh
         self.btn_stats.draw(self.screen, mouse)
@@ -1112,6 +1223,115 @@ class Game:
             self._stats_close_btn.draw(self.screen, mouse)
 
     # ===================================================================
+    # INVENTÁŘ – overlay panel
+    # ===================================================================
+    def _draw_inventory_overlay(self) -> None:
+        # Stmívací overlay
+        dim = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 175))
+        self.screen.blit(dim, (0, 0))
+
+        # Panel
+        panel = pygame.Rect(SCREEN_W // 2 - 290, 50, 580, 480)
+        pygame.draw.rect(self.screen, (38, 28, 52), panel, border_radius=16)
+        pygame.draw.rect(self.screen, (90, 65, 110), panel, 2, border_radius=16)
+
+        cx = SCREEN_W // 2
+
+        # Titulek
+        draw_text_centered(self.screen, "Inventář",
+                           self.f_lg, GOLD, cx, 90)
+
+        # Zlato
+        draw_text_left(self.screen, f"💰  Zlato:  {self.player.gold}",
+                       self.f_md, GOLD, cx - 240, 130)
+
+        # Oddělovač
+        pygame.draw.line(self.screen, (90, 65, 110),
+                         (cx - 250, 165), (cx + 250, 165), 1)
+
+        # Předměty
+        draw_text_left(self.screen, "Předměty",
+                       self.f_md, SILVER, cx - 240, 180)
+
+        y = 220
+        if not self.player.inventory:
+            draw_text_centered(self.screen, "Prázdný inventář",
+                               self.f_sm, (100, 90, 120), cx, y + 30)
+        else:
+            for item in self.player.inventory:
+                icon = item.get("icon", "?")
+                name = item.get("name", "Neznámý předmět")
+                draw_text_left(self.screen, f"  {icon}  {name}",
+                               self.f_sm, TEXT_LT, cx - 230, y)
+                y += 30
+                if y > 460:
+                    draw_text_left(self.screen, "  ...",
+                                   self.f_sm, (100, 90, 120), cx - 230, y)
+                    break
+
+        # Zavřít
+        mouse = pygame.mouse.get_pos()
+        self._inv_close_btn.draw(self.screen, mouse)
+
+    # ===================================================================
+    # LOOT – overlay po zabití nepřítele
+    # ===================================================================
+    def _draw_loot_overlay(self) -> None:
+        # Stmívací overlay
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+        self.screen.blit(overlay, (0, 0))
+
+        cx = SCREEN_W // 2
+
+        # Panel
+        panel = pygame.Rect(cx - 250, 100, 500, 400)
+        pygame.draw.rect(self.screen, (38, 28, 52), panel, border_radius=16)
+        pygame.draw.rect(self.screen, (90, 65, 110), panel, 2, border_radius=16)
+
+        # Titulek
+        draw_text_centered(self.screen, f"Kořist z {self.enemy.name}",
+                           self.f_lg, GOLD, cx, 140)
+
+        # Zlato
+        y = 195
+        draw_text_centered(self.screen, f"💰  {self._loot_gold} zlaťáků",
+                           self.f_md, GOLD, cx, y)
+
+        # Oddělovač
+        y += 40
+        pygame.draw.line(self.screen, (90, 65, 110),
+                         (cx - 200, y), (cx + 200, y), 1)
+
+        # Předměty
+        y += 20
+        draw_text_centered(self.screen, "Předměty:",
+                           self.f_sm, SILVER, cx, y)
+        y += 35
+        for item in self._loot_items:
+            icon = item.get("icon", "?")
+            name = item.get("name", "Neznámý")
+            draw_text_centered(self.screen, f"{icon}  {name}",
+                               self.f_md, TEXT_LT, cx, y)
+            y += 35
+
+        # XP info
+        y += 15
+        draw_text_centered(self.screen, f"+{self.enemy.xp_reward} XP",
+                           self.f_sm, CORRECT_COLOR, cx, y)
+
+        if self._level_up_flag:
+            y += 25
+            draw_text_centered(self.screen,
+                               f"⬆  LEVEL UP!  Nyní Lv.{self.player.level}",
+                               self.f_sm, GOLD, cx, y)
+
+        # Tlačítko Sebrat vše
+        mouse = pygame.mouse.get_pos()
+        self._loot_collect_btn.draw(self.screen, mouse)
+
+    # ===================================================================
     # MAPA
     # ===================================================================
     def _draw_map(self) -> None:
@@ -1156,6 +1376,12 @@ class Game:
                            self.f_xs, (110, 80, 45), w // 2, 78)
         draw_text_centered(self.screen, "[ Esc ] → zpět do kempu",
                            self.f_xs, (120, 95, 55), w // 2, h - 22)
+
+        # Inventář tlačítko
+        mouse = pygame.mouse.get_pos()
+        self.btn_inventory.draw(self.screen, mouse)
+        draw_text_left(self.screen, f"💰 {self.player.gold}",
+                       self.f_xs, (80, 55, 30), SCREEN_W - 320, 56)
 
         # Lokace
         for loc in MAP_LOCATIONS:
@@ -1246,7 +1472,9 @@ class Game:
         self._draw_battle_panel()
         self._draw_battle_log()
         self.message.draw(self.screen)
-        if self.phase == Phase.VICTORY:
+        if self.phase == Phase.LOOT:
+            self._draw_loot_overlay()
+        elif self.phase == Phase.VICTORY:
             self._draw_victory_overlay()
         elif self.phase == Phase.GAME_OVER:
             self._draw_gameover_overlay()
@@ -1276,6 +1504,12 @@ class Game:
                              border_radius=4)
         pygame.draw.rect(self.screen, SILVER, xp_rect, 1, border_radius=4)
         self.hp_player.draw(self.screen)
+
+        # Inventář tlačítko v bitvě (pod nepřítelem)
+        mouse = pygame.mouse.get_pos()
+        self.btn_inventory.draw(self.screen, mouse)
+        draw_text_left(self.screen, f"💰 {self.player.gold}",
+                       self.f_xs, GOLD, SCREEN_W - 320, 56)
 
         name_surf = self.f_xs.render(self.enemy.name, True, (220, 100, 100))
         self.screen.blit(name_surf,
