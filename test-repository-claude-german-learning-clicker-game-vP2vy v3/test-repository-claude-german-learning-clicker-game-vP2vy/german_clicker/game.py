@@ -392,6 +392,8 @@ class Phase(Enum):
     ENEMY_TURN       = "enemy_turn"
     RESOLVE_ENEMY    = "resolve_enemy"
     LOOT             = "loot"
+    CAVE_CHOICE      = "cave_choice"
+    FLEE_RESOLVE     = "flee_resolve"
     VICTORY          = "victory"
     GAME_OVER        = "game_over"
 
@@ -477,6 +479,9 @@ class Game:
         self._loot_selected: list[bool] = []
         self._loot_item_rects: list[pygame.Rect] = []
 
+        # Útěk z boje
+        self._flee_hit: bool = False
+
         # Úkoly starosty
         self._kill_counts: dict[str, int] = {}
         self._quests_claimed: list[bool] = [False] * len(QUEST_DEFS)
@@ -541,18 +546,32 @@ class Game:
         self.hp_enemy  = HealthBar(
             pygame.Rect(SCREEN_W - 270, 52, 240, 22), self.f_xs, align="right")
 
-        # ---- Battle akční tlačítka ----
+        # ---- Battle akční tlačítka (3 vedle sebe) ----
+        btn_bw = 140
+        btotal = btn_bw * 3 + 20 * 2
+        bx0 = cx - btotal // 2
         self.btn_attack = Button(
-            pygame.Rect(cx - 210, 523, 185, 54), "⚔  Útočit", self.f_md,
+            pygame.Rect(bx0, 523, btn_bw, 54), "⚔  Útočit", self.f_md,
             base_color=(145, 55, 55), hover_color=(185, 75, 75))
         self.btn_defend = Button(
-            pygame.Rect(cx + 25,  523, 185, 54), "🛡  Bránit", self.f_md,
+            pygame.Rect(bx0 + btn_bw + 20, 523, btn_bw, 54), "🛡  Bránit", self.f_md,
             base_color=(50, 95, 148), hover_color=(70, 125, 188))
+        self.btn_flee = Button(
+            pygame.Rect(bx0 + 2 * (btn_bw + 20), 523, btn_bw, 54), "🏃  Utéct", self.f_md,
+            base_color=(130, 110, 40), hover_color=(170, 145, 55))
 
         # ---- Textový vstup ----
         self.text_input = TextInput(
             pygame.Rect(cx - 210, 523, 420, 42), self.f_md,
             placeholder="Napiš německy a stiskni Enter…")
+
+        # ---- Cave choice tlačítka (po sběru kořisti) ----
+        self.btn_cave_continue = Button(
+            pygame.Rect(cx - 245, 380, 225, 54), "⚔  Pokračovat", self.f_md,
+            base_color=(145, 55, 55), hover_color=(185, 75, 75))
+        self.btn_cave_leave = Button(
+            pygame.Rect(cx + 20, 380, 225, 54), "🏕  Odejít", self.f_md,
+            base_color=(65, 105, 65), hover_color=(85, 135, 85))
 
         # ---- Stats tlačítko (pravý horní roh) ----
         self.btn_stats = Button(
@@ -651,7 +670,7 @@ class Game:
         self._loot_items = []
         self._loot_selected = []
         self._loot_item_rects = []
-        self.phase = Phase.VICTORY
+        self.phase = Phase.CAVE_CHOICE
 
     def _collect_loot_selected(self) -> None:
         """Sebere pouze označené předměty do inventáře hráče."""
@@ -666,7 +685,32 @@ class Game:
         self._loot_items = []
         self._loot_selected = []
         self._loot_item_rects = []
-        self.phase = Phase.VICTORY
+        self.phase = Phase.CAVE_CHOICE
+
+    def _cave_continue(self) -> None:
+        """Pokračuje v průzkumu jeskyně – další nepřítel."""
+        self.enemy_index = (self.enemy_index + 1) % len(ENEMY_SEQUENCE)
+        name = ENEMY_SEQUENCE[self.enemy_index]
+        self.enemy = _make_enemy(name, self.player.level)
+        self._sync_hp_bars()
+        self._level_up_flag = False
+        self._start_battle()
+
+    def _attempt_flee(self) -> None:
+        """Pokus o útěk z boje. 50% šance na zásah nepřítelem."""
+        if random.random() < 0.5:
+            dmg = max(1, self.enemy.attack - self.player.effective_defense)
+            self.player.hp = max(0, self.player.hp - dmg)
+            self._sync_hp_bars()
+            self._add_log(f"Při útěku tě {self.enemy.name} zasáhl za {dmg}!")
+            self.message.show(f"💀  Zásah při útěku!  −{dmg} HP", WRONG_COLOR)
+            self._flee_hit = True
+        else:
+            self._add_log("Podařilo se utéct bez zranění!")
+            self.message.show("🏃  Úspěšný útěk!", CORRECT_COLOR)
+            self._flee_hit = False
+        self.phase = Phase.FLEE_RESOLVE
+        self._pause_timer = RESOLVE_PAUSE_MS
 
     def _toggle_loot_selection(self, pos: tuple) -> None:
         """Přepne výběr předmětu v loot panelu."""
@@ -1029,6 +1073,8 @@ class Game:
                 elif self.btn_defend.handle_event(event):
                     self.player_action = "defend"
                     self.phase = Phase.PLAYER_TRANSLATE
+                elif self.btn_flee.handle_event(event):
+                    self._attempt_flee()
 
             # ---------- BATTLE FÁZE 2 ----------
             elif self.phase == Phase.PLAYER_TRANSLATE:
@@ -1044,13 +1090,17 @@ class Game:
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     self._toggle_loot_selection(event.pos)
 
-            # ---------- VICTORY / GAME OVER ----------
-            elif self.phase in (Phase.VICTORY, Phase.GAME_OVER):
+            # ---------- CAVE CHOICE (po sběru kořisti) ----------
+            elif self.phase == Phase.CAVE_CHOICE:
+                if self.btn_cave_continue.handle_event(event):
+                    self._cave_continue()
+                elif self.btn_cave_leave.handle_event(event):
+                    self._next_enemy()
+
+            # ---------- GAME OVER ----------
+            elif self.phase == Phase.GAME_OVER:
                 if event.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
-                    if self.phase == Phase.VICTORY:
-                        self._next_enemy()
-                    else:
-                        self.phase = Phase.MENU
+                    self.phase = Phase.MENU
 
     # ------------------------------------------------------------------
     # Aktualizace
@@ -1094,6 +1144,13 @@ class Game:
             self._pause_timer -= dt
             if self._pause_timer <= 0:
                 self._check_player_dead()
+        elif self.phase == Phase.FLEE_RESOLVE:
+            self._pause_timer -= dt
+            if self._pause_timer <= 0:
+                if self.player.hp <= 0:
+                    self.phase = Phase.GAME_OVER
+                else:
+                    self.phase = Phase.CAMP
 
     # ------------------------------------------------------------------
     # Battle logika
@@ -1237,7 +1294,7 @@ class Game:
         self.btn_menu_load.enabled = self._has_save()
         self.btn_menu_load.draw(self.screen, mouse)
         self.btn_menu_quit.draw(self.screen,  mouse)
-        draw_text_centered(self.screen, "v2.3  |  Python + Pygame",
+        draw_text_centered(self.screen, "v2.4  |  Python + Pygame",
                            self.f_xs, (85, 75, 100), cx, SCREEN_H - 18)
 
     # ===================================================================
@@ -1358,11 +1415,23 @@ class Game:
         draw_text_centered(self.screen, "⛺  Základní kemp",
                            self.f_md, GOLD, cx, h - 105)
 
-        # Stav hráče (HP + XP + level) vlevo v liště
+        # Stav hráče – prominentní info bar
+        stat_y = h - 80
+        draw_text_left(self.screen, f"Lv.{self.player.level}",
+                       self.f_sm, GOLD, 15, stat_y)
+        hp_ratio = self.player.hp / max(1, self.player.max_hp)
+        hp_col = ((70, 200, 80) if hp_ratio > 0.5
+                  else (220, 190, 40) if hp_ratio > 0.25
+                  else (210, 55, 55))
         draw_text_left(self.screen,
-                       f"Lv.{self.player.level}  HP {self.player.hp}/{self.player.max_hp}"
-                       f"  XP {self.player.xp}/{self.player.xp_to_next}",
-                       self.f_xs, SILVER, 20, h - 60)
+                       f"❤ {self.player.hp}/{self.player.max_hp}",
+                       self.f_sm, hp_col, 95, stat_y)
+        draw_text_left(self.screen,
+                       f"✦ XP {self.player.xp}/{self.player.xp_to_next}",
+                       self.f_sm, SILVER, 250, stat_y)
+        draw_text_left(self.screen,
+                       f"💰 {self.player.gold}",
+                       self.f_sm, GOLD, 430, stat_y)
 
         mouse = pygame.mouse.get_pos()
 
@@ -1954,8 +2023,8 @@ class Game:
         self.message.draw(self.screen)
         if self.phase == Phase.LOOT:
             self._draw_loot_overlay()
-        elif self.phase == Phase.VICTORY:
-            self._draw_victory_overlay()
+        elif self.phase == Phase.CAVE_CHOICE:
+            self._draw_cave_choice_overlay()
         elif self.phase == Phase.GAME_OVER:
             self._draw_gameover_overlay()
 
@@ -2010,6 +2079,7 @@ class Game:
                                self.f_sm, TEXT_LT, cx, h - 100)
             self.btn_attack.draw(self.screen, mouse)
             self.btn_defend.draw(self.screen, mouse)
+            self.btn_flee.draw(self.screen, mouse)
 
         elif self.phase == Phase.PLAYER_TRANSLATE:
             label = "⚔  Útok" if self.player_action == "attack" else "🛡  Obrana"
@@ -2024,7 +2094,7 @@ class Game:
                                self.f_xs, (95, 85, 115), cx, h - 12)
 
         elif self.phase in (Phase.RESOLVE_PLAYER, Phase.ENEMY_TURN,
-                            Phase.RESOLVE_ENEMY):
+                            Phase.RESOLVE_ENEMY, Phase.FLEE_RESOLVE):
             draw_text_centered(self.screen, "…", self.f_md,
                                (90, 80, 110), cx, h - 65)
 
@@ -2034,6 +2104,28 @@ class Game:
             draw_text_left(self.screen, msg, self.f_xs,
                            (135, 125, 155), 30, y)
             y += 18
+
+    def _draw_cave_choice_overlay(self) -> None:
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 140))
+        self.screen.blit(overlay, (0, 0))
+        cx, cy = SCREEN_W // 2, SCREEN_H // 2 - 90
+
+        draw_text_centered(self.screen, "Vítězství!", self.f_xl, GOLD, cx, cy)
+        draw_text_centered(self.screen, f"+{self.enemy.xp_reward} XP",
+                           self.f_lg, CORRECT_COLOR, cx, cy + 72)
+        if self._level_up_flag:
+            draw_text_centered(self.screen,
+                               f"⬆  LEVEL UP!  Nyní Lv.{self.player.level}",
+                               self.f_md, GOLD, cx, cy + 128)
+        draw_text_centered(self.screen,
+                           "Chceš pokračovat v průzkumu jeskyně?",
+                           self.f_sm, TEXT_LT, cx, cy + 175)
+        mouse = pygame.mouse.get_pos()
+        self.btn_cave_continue.rect.y = cy + 210
+        self.btn_cave_leave.rect.y = cy + 210
+        self.btn_cave_continue.draw(self.screen, mouse)
+        self.btn_cave_leave.draw(self.screen, mouse)
 
     def _draw_victory_overlay(self) -> None:
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
