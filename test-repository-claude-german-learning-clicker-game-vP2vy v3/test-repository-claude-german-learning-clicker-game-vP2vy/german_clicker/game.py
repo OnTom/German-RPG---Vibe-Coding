@@ -192,13 +192,21 @@ class Player:
     def xp_to_next(self) -> int:
         return self.level * 80
 
+    def _equipment_bonus(self, stat_name: str) -> int:
+        """Spočítá celkový bonus z nasazené výzbroje pro daný stat."""
+        total = 0
+        for item in self.equipment.values():
+            if item:
+                total += item.get("stat_bonuses", {}).get(stat_name, 0)
+        return total
+
     @property
     def effective_attack(self) -> int:
-        return self.attack + self.sila * 3
+        return self.attack + (self.sila + self._equipment_bonus("sila")) * 3
 
     @property
     def effective_defense(self) -> int:
-        return self.defense + self.houzevnatost * 2
+        return self.defense + (self.houzevnatost + self._equipment_bonus("houzevnatost")) * 2
 
     def try_level_up(self) -> bool:
         if self.xp >= self.xp_to_next:
@@ -244,25 +252,36 @@ _CORPSE_ICONS: dict[str, str] = {
 # Tabulka výzbroje, která může vypadnout z nepřátel
 _EQUIPMENT_LOOT: dict[str, list[dict]] = {
     "Šnek": [
-        {"name": "Šnečí štít", "icon": "🛡", "slot": "štít", "skill_bonus": 1},
-        {"name": "Slizký prsten", "icon": "💍", "slot": "prsten", "skill_bonus": 1},
+        {"name": "Šnečí štít", "icon": "🛡", "slot": "štít",
+         "stat_bonuses": {"houzevnatost": 1}},
+        {"name": "Slizký prsten", "icon": "💍", "slot": "prsten",
+         "stat_bonuses": {"sila": 1}},
     ],
     "Pavouk": [
-        {"name": "Pavoučí helma", "icon": "🪖", "slot": "helma", "skill_bonus": 1},
-        {"name": "Pavučinové boty", "icon": "👢", "slot": "boty", "skill_bonus": 1},
+        {"name": "Pavoučí helma", "icon": "🪖", "slot": "helma",
+         "stat_bonuses": {"houzevnatost": 1}},
+        {"name": "Pavučinové boty", "icon": "👢", "slot": "boty",
+         "stat_bonuses": {"agility": 1}},
     ],
     "Ještěrka": [
-        {"name": "Ještěrčí meč", "icon": "⚔", "slot": "meč", "skill_bonus": 1},
-        {"name": "Šupinové brnění", "icon": "🦺", "slot": "brnění", "skill_bonus": 1},
+        {"name": "Ještěrčí meč", "icon": "⚔", "slot": "meč",
+         "stat_bonuses": {"sila": 1}},
+        {"name": "Šupinové brnění", "icon": "🦺", "slot": "brnění",
+         "stat_bonuses": {"houzevnatost": 1}},
     ],
     "Netopýr": [
-        {"name": "Křídlatý náhrdelník", "icon": "📿", "slot": "náhrdelník", "skill_bonus": 1},
-        {"name": "Stínové boty", "icon": "👢", "slot": "boty", "skill_bonus": 1},
+        {"name": "Křídlatý náhrdelník", "icon": "📿", "slot": "náhrdelník",
+         "stat_bonuses": {"charisma": 1}},
+        {"name": "Stínové boty", "icon": "👢", "slot": "boty",
+         "stat_bonuses": {"agility": 1}},
     ],
     "Drak": [
-        {"name": "Dračí helma", "icon": "🪖", "slot": "helma", "skill_bonus": 2},
-        {"name": "Dračí meč", "icon": "⚔", "slot": "meč", "skill_bonus": 2},
-        {"name": "Dračí brnění", "icon": "🦺", "slot": "brnění", "skill_bonus": 2},
+        {"name": "Dračí helma", "icon": "🪖", "slot": "helma",
+         "stat_bonuses": {"houzevnatost": 2}},
+        {"name": "Dračí meč", "icon": "⚔", "slot": "meč",
+         "stat_bonuses": {"sila": 2}},
+        {"name": "Dračí brnění", "icon": "🦺", "slot": "brnění",
+         "stat_bonuses": {"houzevnatost": 2}},
     ],
 }
 
@@ -472,6 +491,7 @@ class Game:
 
         # Inventář – fáze, ze které se otevřel (pro návrat)
         self._inv_return_phase: Phase = Phase.CAMP
+        self._inv_selected_idx: int = -1  # index vybraného předmětu (-1 = nic)
 
         # Loot – dočasný loot ke zobrazení
         self._loot_gold:  int  = 0
@@ -591,6 +611,20 @@ class Game:
             "Zavřít", self.f_sm,
             base_color=(90, 55, 55), hover_color=(125, 75, 75))
 
+        # ---- Inventář panel – akční tlačítka pro vybraný předmět ----
+        self._inv_equip_btn = Button(
+            pygame.Rect(0, 0, 120, 36),
+            "Vyzbrojit", self.f_sm,
+            base_color=(60, 120, 60), hover_color=(80, 160, 80))
+        self._inv_discard_btn = Button(
+            pygame.Rect(0, 0, 100, 36),
+            "Zahodit", self.f_sm,
+            base_color=(140, 55, 55), hover_color=(180, 75, 75))
+        self._inv_unequip_btn = Button(
+            pygame.Rect(0, 0, 120, 36),
+            "Sundat", self.f_sm,
+            base_color=(130, 100, 40), hover_color=(170, 135, 55))
+
         # ---- Loot panel – sebrat vybrané ----
         self._loot_collect_selected_btn = Button(
             pygame.Rect(SCREEN_W // 2 - 245, 430, 225, 48),
@@ -656,16 +690,47 @@ class Game:
     def _open_inventory(self) -> None:
         """Otevře inventář z jakékoli obrazovky."""
         self._inv_return_phase = self.phase
+        self._inv_selected_idx = -1
         self.phase = Phase.INVENTORY
+
+    def _equip_item(self, inv_idx: int) -> None:
+        """Nasadí předmět z inventáře do příslušného slotu výzbroje."""
+        if inv_idx < 0 or inv_idx >= len(self.player.inventory):
+            return
+        item = self.player.inventory[inv_idx]
+        slot = item.get("slot")
+        if not slot or slot not in self.player.equipment:
+            return
+        # Sundej starý předmět ze slotu (vrátí se do inventáře)
+        old_item = self.player.equipment[slot]
+        self.player.equipment[slot] = item
+        self.player.inventory.pop(inv_idx)
+        if old_item:
+            self.player.inventory.append(old_item)
+        self._inv_selected_idx = -1
+
+    def _unequip_item(self, slot: str) -> None:
+        """Sundá předmět z výzbroje do inventáře."""
+        item = self.player.equipment.get(slot)
+        if not item:
+            return
+        if len(self.player.inventory) >= 12:
+            return  # inventář plný
+        self.player.equipment[slot] = None
+        self.player.inventory.append(item)
+
+    def _discard_item(self, inv_idx: int) -> None:
+        """Zahodí předmět z inventáře."""
+        if inv_idx < 0 or inv_idx >= len(self.player.inventory):
+            return
+        self.player.inventory.pop(inv_idx)
+        self._inv_selected_idx = -1
 
     def _collect_loot(self) -> None:
         """Sebere veškerý loot do inventáře hráče."""
         self.player.gold += self._loot_gold
         for item in self._loot_items:
             self.player.inventory.append(item)
-            bonus = item.get("skill_bonus", 0)
-            if bonus:
-                self.player.skill_points += bonus
         self._loot_gold  = 0
         self._loot_items = []
         self._loot_selected = []
@@ -678,9 +743,6 @@ class Game:
         for i, item in enumerate(self._loot_items):
             if i < len(self._loot_selected) and self._loot_selected[i]:
                 self.player.inventory.append(item)
-                bonus = item.get("skill_bonus", 0)
-                if bonus:
-                    self.player.skill_points += bonus
         self._loot_gold  = 0
         self._loot_items = []
         self._loot_selected = []
@@ -1034,6 +1096,29 @@ class Game:
             elif self.phase == Phase.INVENTORY:
                 if self._inv_close_btn.handle_event(event):
                     self.phase = self._inv_return_phase
+                elif self._inv_equip_btn.handle_event(event):
+                    if 0 <= self._inv_selected_idx < len(self.player.inventory):
+                        self._equip_item(self._inv_selected_idx)
+                elif self._inv_discard_btn.handle_event(event):
+                    if 0 <= self._inv_selected_idx < len(self.player.inventory):
+                        self._discard_item(self._inv_selected_idx)
+                elif self._inv_unequip_btn.handle_event(event):
+                    slot = getattr(self._inv_unequip_btn, "_slot", None)
+                    if slot:
+                        self._unequip_item(slot)
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    # Klik na předmět v mřížce
+                    clicked = False
+                    for i, rect in enumerate(
+                            getattr(self, "_inv_item_rects", [])):
+                        if (rect.collidepoint(event.pos)
+                                and i < len(self.player.inventory)):
+                            self._inv_selected_idx = (
+                                -1 if self._inv_selected_idx == i else i)
+                            clicked = True
+                            break
+                    if not clicked:
+                        self._inv_selected_idx = -1
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     self.phase = self._inv_return_phase
 
@@ -1580,9 +1665,14 @@ class Game:
         # Útok
         draw_text_left(self.screen, f"⚔  Síla útoku:",
                        self.f_sm, TEXT_LT, cx - 240, y)
+        eq_sila = p._equipment_bonus("sila")
+        total_sila = p.sila + eq_sila
         atk_text = f"{p.effective_attack}"
-        if p.sila > 0:
-            atk_text += f"  ({p.attack} + {p.sila * 3})"
+        if total_sila > 0:
+            detail = f"{p.attack} + {total_sila * 3}"
+            if eq_sila > 0:
+                detail += f" [výzbroj +{eq_sila * 3}]"
+            atk_text += f"  ({detail})"
         draw_text_left(self.screen, atk_text,
                        self.f_sm, CORRECT_COLOR, cx + 40, y)
         y += 28
@@ -1590,9 +1680,14 @@ class Game:
         # Obrana
         draw_text_left(self.screen, f"🛡  Síla obrany:",
                        self.f_sm, TEXT_LT, cx - 240, y)
+        eq_houz = p._equipment_bonus("houzevnatost")
+        total_houz = p.houzevnatost + eq_houz
         def_text = f"{p.effective_defense}"
-        if p.houzevnatost > 0:
-            def_text += f"  ({p.defense} + {p.houzevnatost * 2})"
+        if total_houz > 0:
+            detail = f"{p.defense} + {total_houz * 2}"
+            if eq_houz > 0:
+                detail += f" [výzbroj +{eq_houz * 2}]"
+            def_text += f"  ({detail})"
         draw_text_left(self.screen, def_text,
                        self.f_sm, (100, 160, 220), cx + 40, y)
         y += 28
@@ -1650,6 +1745,12 @@ class Game:
     # ===================================================================
     # INVENTÁŘ – overlay panel
     # ===================================================================
+    # Mapování stat_bonuses klíčů na čitelné české názvy
+    _STAT_LABELS: dict[str, str] = {
+        "sila": "Síla", "charisma": "Charisma", "moudrost": "Moudrost",
+        "houzevnatost": "Houževnatost", "agility": "Agility",
+    }
+
     def _draw_inventory_overlay(self) -> None:
         # Stmívací overlay
         dim = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
@@ -1697,9 +1798,12 @@ class Game:
             "náhrdelník": (col_right,  base_y + 4 * row_h),
         }
 
+        # Uložíme rect slotů pro event handling
+        self._inv_slot_rects: dict[str, pygame.Rect] = {}
         hovered_slot = None
         for slot_name, (sx, sy) in slot_positions.items():
             rect = pygame.Rect(sx, sy, slot_size, slot_size)
+            self._inv_slot_rects[slot_name] = rect
             equipped = self.player.equipment.get(slot_name)
 
             bg = (55, 45, 70) if equipped else (30, 22, 40)
@@ -1722,16 +1826,38 @@ class Game:
                                icon_col, sx + slot_size // 2,
                                sy + slot_size // 2)
 
-        # Tooltip výzbroje
+        # Tooltip výzbroje + tlačítko Sundat
+        tooltip_y = base_y + 5 * row_h + 12
         if hovered_slot:
             info = EQUIPMENT_SLOT_INFO[hovered_slot]
             equipped = self.player.equipment.get(hovered_slot)
             if equipped:
                 tip = f"{info[1]}: {equipped.get('name', '?')}"
+                draw_text_centered(self.screen, tip, self.f_xs,
+                                   TEXT_LT, ecx, tooltip_y)
+                # Bonusy nasazeného předmětu
+                bonuses = equipped.get("stat_bonuses", {})
+                if bonuses:
+                    parts = []
+                    for stat, val in bonuses.items():
+                        label = self._STAT_LABELS.get(stat, stat)
+                        parts.append(f"+{val} {label}")
+                    draw_text_centered(self.screen, "  ".join(parts),
+                                       self.f_xs, CORRECT_COLOR,
+                                       ecx, tooltip_y + 16)
+                # Tlačítko Sundat
+                ubtn_x = ecx - 60
+                ubtn_y = tooltip_y + 32
+                self._inv_unequip_btn.rect.topleft = (ubtn_x, ubtn_y)
+                self._inv_unequip_btn.enabled = len(self.player.inventory) < 12
+                self._inv_unequip_btn._slot = hovered_slot  # type: ignore[attr-defined]
+                self._inv_unequip_btn.draw(self.screen, mouse)
             else:
                 tip = f"{info[1]}: prázdné"
-            draw_text_centered(self.screen, tip, self.f_xs,
-                               TEXT_LT, ecx, base_y + 5 * row_h + 12)
+                draw_text_centered(self.screen, tip, self.f_xs,
+                                   TEXT_LT, ecx, tooltip_y)
+        else:
+            self._inv_unequip_btn._slot = None  # type: ignore[attr-defined]
 
         # === PRAVÁ STRANA: Mřížka předmětů 3×4 ===
         grid_cx = 635
@@ -1743,7 +1869,10 @@ class Game:
         grid_w = 3 * cell + 2 * gap
         grid_x = grid_cx - grid_w // 2
         grid_y = 155
-        hovered_item_name = None
+        hovered_item_idx = -1
+
+        # Uložíme rect předmětů pro event handling
+        self._inv_item_rects: list[pygame.Rect] = []
 
         for row in range(4):
             for col in range(3):
@@ -1751,15 +1880,18 @@ class Game:
                 x = grid_x + col * (cell + gap)
                 y = grid_y + row * (cell + gap)
                 r = pygame.Rect(x, y, cell, cell)
+                self._inv_item_rects.append(r)
 
                 if idx < len(self.player.inventory):
                     item = self.player.inventory[idx]
-                    bg = (55, 45, 70)
+                    is_selected = (idx == self._inv_selected_idx)
+                    bg = (80, 65, 30) if is_selected else (55, 45, 70)
                     if r.collidepoint(mouse):
-                        bg = (75, 62, 90)
-                        hovered_item_name = item.get("name", "?")
+                        hovered_item_idx = idx
+                        bg = (95, 80, 40) if is_selected else (75, 62, 90)
                     pygame.draw.rect(self.screen, bg, r, border_radius=8)
-                    pygame.draw.rect(self.screen, (90, 70, 110), r, 2,
+                    border_col = GOLD if is_selected else (90, 70, 110)
+                    pygame.draw.rect(self.screen, border_col, r, 2,
                                      border_radius=8)
                     icon = item.get("icon", "?")
                     draw_text_centered(self.screen, icon, self.f_md,
@@ -1770,14 +1902,79 @@ class Game:
                     pygame.draw.rect(self.screen, (60, 48, 75), r, 1,
                                      border_radius=8)
 
-        # Počet předmětů + hover název
+        # Počet předmětů
         bottom_y = grid_y + 4 * (cell + gap) + 8
         count = len(self.player.inventory)
         draw_text_centered(self.screen, f"{count}/12",
                            self.f_xs, (100, 90, 120), grid_cx, bottom_y)
-        if hovered_item_name:
-            draw_text_centered(self.screen, hovered_item_name,
-                               self.f_xs, TEXT_LT, grid_cx, bottom_y + 18)
+
+        # === Detail vybraného předmětu + akční tlačítka ===
+        sel = self._inv_selected_idx
+        if 0 <= sel < len(self.player.inventory):
+            item = self.player.inventory[sel]
+            name = item.get("name", "?")
+            slot = item.get("slot")
+            is_equippable = slot is not None and slot in self.player.equipment
+
+            # Název předmětu
+            draw_text_centered(self.screen, name, self.f_sm,
+                               GOLD, grid_cx, bottom_y + 20)
+
+            # Bonusy předmětu
+            bonuses = item.get("stat_bonuses", {})
+            if bonuses:
+                parts = []
+                for stat, val in bonuses.items():
+                    label = self._STAT_LABELS.get(stat, stat)
+                    parts.append(f"+{val} {label}")
+                draw_text_centered(self.screen, "  ".join(parts),
+                                   self.f_xs, CORRECT_COLOR,
+                                   grid_cx, bottom_y + 40)
+
+            # Porovnání se stávající výzbrojí (stat diff)
+            if is_equippable:
+                current_equipped = self.player.equipment.get(slot)
+                old_bonuses = current_equipped.get("stat_bonuses", {}) if current_equipped else {}
+                new_bonuses = bonuses
+                # Spočítej rozdíly
+                all_stats = set(list(old_bonuses.keys()) + list(new_bonuses.keys()))
+                diff_parts = []
+                for stat in sorted(all_stats):
+                    old_val = old_bonuses.get(stat, 0)
+                    new_val = new_bonuses.get(stat, 0)
+                    diff = new_val - old_val
+                    if diff != 0:
+                        label = self._STAT_LABELS.get(stat, stat)
+                        sign = "+" if diff > 0 else ""
+                        col = CORRECT_COLOR if diff > 0 else WRONG_COLOR
+                        diff_parts.append((f"{sign}{diff} {label}", col))
+
+                if diff_parts:
+                    dx = grid_cx - sum(self.f_xs.size(t)[0] for t, _ in diff_parts) // 2
+                    dy = bottom_y + 56
+                    for text, col in diff_parts:
+                        draw_text_left(self.screen, text, self.f_xs, col, dx, dy)
+                        dx += self.f_xs.size(text)[0] + 10
+                elif current_equipped:
+                    draw_text_centered(self.screen, "(beze změny)",
+                                       self.f_xs, (100, 90, 120),
+                                       grid_cx, bottom_y + 56)
+
+            # Tlačítka Vyzbrojit / Zahodit
+            btn_y = bottom_y + 74
+            if is_equippable:
+                self._inv_equip_btn.rect.topleft = (grid_cx - 125, btn_y)
+                self._inv_equip_btn.draw(self.screen, mouse)
+                self._inv_discard_btn.rect.topleft = (grid_cx + 15, btn_y)
+                self._inv_discard_btn.draw(self.screen, mouse)
+            else:
+                self._inv_discard_btn.rect.topleft = (grid_cx - 50, btn_y)
+                self._inv_discard_btn.draw(self.screen, mouse)
+        elif 0 <= hovered_item_idx < len(self.player.inventory):
+            # Jen hover – zobraz název
+            hname = self.player.inventory[hovered_item_idx].get("name", "?")
+            draw_text_centered(self.screen, hname, self.f_xs,
+                               TEXT_LT, grid_cx, bottom_y + 18)
 
         # Zavřít
         self._inv_close_btn.draw(self.screen, mouse)
@@ -1824,7 +2021,7 @@ class Game:
         for i, item in enumerate(self._loot_items):
             icon = item.get("icon", "?")
             name = item.get("name", "Neznámý")
-            bonus = item.get("skill_bonus", 0)
+            bonuses = item.get("stat_bonuses", {})
             selected = i < len(self._loot_selected) and self._loot_selected[i]
 
             # Klikatelný řádek
@@ -1853,10 +2050,12 @@ class Game:
             draw_text_left(self.screen, text, self.f_sm, text_col,
                            cx - 198, y - 8)
 
-            # Bonus dovednostních bodů
-            if bonus > 0:
-                draw_text_left(self.screen, f"+{bonus} dov. bod",
-                               self.f_xs, GOLD, cx + 150, y - 5)
+            # Bonusy výzbroje
+            if bonuses:
+                parts = [f"+{v} {self._STAT_LABELS.get(k, k)}"
+                         for k, v in bonuses.items()]
+                draw_text_left(self.screen, "  ".join(parts),
+                               self.f_xs, GOLD, cx + 130, y - 5)
 
             y += 38
 
