@@ -9,6 +9,8 @@ Stavový automat:
 
 import pygame
 import random
+import json
+import os
 from enum import Enum
 from dataclasses import dataclass, field
 
@@ -28,6 +30,8 @@ FPS = 60
 RESOLVE_PAUSE_MS = 1400
 ENEMY_TURN_DELAY = 700
 FIRE_FRAME_MS    = 380   # ms per campfire frame
+
+_SAVE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "savegame.json")
 
 # ---------------------------------------------------------------------------
 # Paleta pixelů pro sprite renderer
@@ -282,6 +286,14 @@ NPC_DATA: dict[str, dict] = {
         "text":  "Hrdino! Mám pro tebe úkoly.\nSplň je a budeš odměněn!",
         "items": [],
     },
+    "hospoda": {
+        "name":  "Hostinský Karel",
+        "color": (165, 120, 55),
+        "text":  "Vítej v Hospodě U Zlatého draka!\nZa pár zlaťáků ti uložím postup.",
+        "items": [
+            {"label": "Uložit hru", "cost": 10, "action": "save_game"},
+        ],
+    },
 }
 
 
@@ -456,15 +468,18 @@ class Game:
 
         # ---- Menu ----
         self.btn_menu_start = Button(
-            pygame.Rect(cx - 140, 320, 280, 58), "Hrát", self.f_md)
+            pygame.Rect(cx - 140, 290, 280, 58), "Hrát", self.f_md)
+        self.btn_menu_load  = Button(
+            pygame.Rect(cx - 140, 360, 280, 58), "Načíst hru", self.f_md,
+            base_color=(70, 90, 130), hover_color=(95, 120, 170))
         self.btn_menu_quit  = Button(
-            pygame.Rect(cx - 140, 400, 280, 58), "Ukončit", self.f_md)
+            pygame.Rect(cx - 140, 430, 280, 58), "Ukončit", self.f_md)
 
         # ---- Camp ----
         camp_y  = SCREEN_H - 108
-        btn_w   = 185
-        gap     = 14
-        total_w = btn_w * 4 + gap * 3
+        btn_w   = 155
+        gap     = 10
+        total_w = btn_w * 5 + gap * 4
         x0      = (SCREEN_W - total_w) // 2
 
         self.btn_merchant = Button(
@@ -476,11 +491,15 @@ class Game:
             "⚒  Kovář", self.f_sm,
             base_color=(90, 80, 70), hover_color=(120, 105, 90))
         self.btn_mayor = Button(
-            pygame.Rect(x0 + (btn_w + gap) * 2,  camp_y + 30, btn_w, 52),
+            pygame.Rect(x0 + (btn_w + gap) * 2, camp_y + 30, btn_w, 52),
             "📜  Starosta", self.f_sm,
             base_color=(60, 90, 140), hover_color=(80, 120, 175))
+        self.btn_inn = Button(
+            pygame.Rect(x0 + (btn_w + gap) * 3, camp_y + 30, btn_w, 52),
+            "🍺  Hospoda", self.f_sm,
+            base_color=(130, 90, 40), hover_color=(170, 120, 55))
         self.btn_leave = Button(
-            pygame.Rect(x0 + (btn_w + gap) * 3,  camp_y + 30, btn_w, 52),
+            pygame.Rect(x0 + (btn_w + gap) * 4, camp_y + 30, btn_w, 52),
             "🗺  Odejít", self.f_sm,
             base_color=(65, 105, 65), hover_color=(85, 135, 85))
 
@@ -591,6 +610,78 @@ class Game:
         self._loot_gold  = 0
         self._loot_items = []
         self.phase = Phase.VICTORY
+
+    # ------------------------------------------------------------------
+    # Ukládání a načítání hry
+    # ------------------------------------------------------------------
+    def _save_game(self) -> bool:
+        """Uloží aktuální stav hry do souboru."""
+        data = {
+            "player": {
+                "hp": self.player.hp, "max_hp": self.player.max_hp,
+                "attack": self.player.attack, "defense": self.player.defense,
+                "xp": self.player.xp, "level": self.player.level,
+                "skill_points": self.player.skill_points,
+                "sila": self.player.sila, "charisma": self.player.charisma,
+                "moudrost": self.player.moudrost,
+                "houzevnatost": self.player.houzevnatost,
+                "agility": self.player.agility,
+                "gold": self.player.gold,
+                "inventory": self.player.inventory,
+                "equipment": self.player.equipment,
+            },
+            "enemy_index": self.enemy_index,
+            "kill_counts": self._kill_counts,
+            "quests_claimed": self._quests_claimed,
+        }
+        try:
+            with open(_SAVE_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception:
+            return False
+
+    def _load_game(self) -> bool:
+        """Načte uloženou hru ze souboru."""
+        try:
+            with open(_SAVE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return False
+
+        pd = data["player"]
+        self.player = Player(
+            hp=pd["hp"], max_hp=pd["max_hp"],
+            attack=pd["attack"], defense=pd["defense"],
+            xp=pd["xp"], level=pd["level"],
+            skill_points=pd["skill_points"],
+            sila=pd["sila"], charisma=pd["charisma"],
+            moudrost=pd["moudrost"], houzevnatost=pd["houzevnatost"],
+            agility=pd["agility"],
+            gold=pd["gold"],
+            inventory=pd.get("inventory", []),
+            equipment=pd.get("equipment", {
+                "helma": None, "meč": None, "štít": None,
+                "brnění": None, "boty": None, "prsten": None,
+                "náhrdelník": None,
+            }),
+        )
+        self.enemy_index = data["enemy_index"]
+        self._kill_counts = data.get("kill_counts", {})
+        self._quests_claimed = data.get("quests_claimed",
+                                        [False] * len(QUEST_DEFS))
+
+        name = ENEMY_SEQUENCE[self.enemy_index]
+        self.enemy = _make_enemy(name, self.player.level)
+        self.battle_log = []
+        self._level_up_flag = False
+        self._sync_hp_bars()
+        self.phase = Phase.CAMP
+        return True
+
+    @staticmethod
+    def _has_save() -> bool:
+        return os.path.exists(_SAVE_PATH)
 
     # ------------------------------------------------------------------
     # Úkoly starosty
@@ -765,6 +856,12 @@ class Game:
             self.player.max_hp += 25
             self.player.hp     += 25
             self._npc_feedback = f"Max HP zvýšeno na {self.player.max_hp}."
+        elif action == "save_game":
+            if self._save_game():
+                self._npc_feedback = "Hra uložena!"
+            else:
+                self.player.gold += cost  # vrátit zlato při chybě
+                self._npc_feedback = "Chyba při ukládání!"
         self._npc_feedback_timer = 2000
 
     # ------------------------------------------------------------------
@@ -791,6 +888,8 @@ class Game:
             elif self.phase == Phase.MENU:
                 if self.btn_menu_start.handle_event(event):
                     self._new_game()
+                if self.btn_menu_load.handle_event(event):
+                    self._load_game()
                 if self.btn_menu_quit.handle_event(event):
                     self.running = False
 
@@ -806,6 +905,8 @@ class Game:
                     self._open_npc("kovar")
                 elif self.btn_mayor.handle_event(event):
                     self._open_npc("starosta")
+                elif self.btn_inn.handle_event(event):
+                    self._open_npc("hospoda")
                 elif self.btn_leave.handle_event(event):
                     self.phase = Phase.MAP
 
@@ -1062,8 +1163,10 @@ class Game:
                            self.f_sm, TEXT_LT, cx, 255)
         mouse = pygame.mouse.get_pos()
         self.btn_menu_start.draw(self.screen, mouse)
+        self.btn_menu_load.enabled = self._has_save()
+        self.btn_menu_load.draw(self.screen, mouse)
         self.btn_menu_quit.draw(self.screen,  mouse)
-        draw_text_centered(self.screen, "v2.1  |  Python + Pygame",
+        draw_text_centered(self.screen, "v2.2  |  Python + Pygame",
                            self.f_xs, (85, 75, 100), cx, SCREEN_H - 18)
 
     # ===================================================================
@@ -1211,6 +1314,7 @@ class Game:
         self.btn_merchant.draw(self.screen, mouse)
         self.btn_blacksmith.draw(self.screen, mouse)
         self.btn_mayor.draw(self.screen, mouse)
+        self.btn_inn.draw(self.screen, mouse)
         self.btn_leave.draw(self.screen, mouse)
 
     # ===================================================================
