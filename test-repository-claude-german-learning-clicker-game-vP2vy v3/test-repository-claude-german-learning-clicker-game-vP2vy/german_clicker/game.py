@@ -241,6 +241,31 @@ _CORPSE_ICONS: dict[str, str] = {
     "Drak":      "🐉",
 }
 
+# Tabulka výzbroje, která může vypadnout z nepřátel
+_EQUIPMENT_LOOT: dict[str, list[dict]] = {
+    "Šnek": [
+        {"name": "Šnečí štít", "icon": "🛡", "slot": "štít", "skill_bonus": 1},
+        {"name": "Slizký prsten", "icon": "💍", "slot": "prsten", "skill_bonus": 1},
+    ],
+    "Pavouk": [
+        {"name": "Pavoučí helma", "icon": "🪖", "slot": "helma", "skill_bonus": 1},
+        {"name": "Pavučinové boty", "icon": "👢", "slot": "boty", "skill_bonus": 1},
+    ],
+    "Ještěrka": [
+        {"name": "Ještěrčí meč", "icon": "⚔", "slot": "meč", "skill_bonus": 1},
+        {"name": "Šupinové brnění", "icon": "🦺", "slot": "brnění", "skill_bonus": 1},
+    ],
+    "Netopýr": [
+        {"name": "Křídlatý náhrdelník", "icon": "📿", "slot": "náhrdelník", "skill_bonus": 1},
+        {"name": "Stínové boty", "icon": "👢", "slot": "boty", "skill_bonus": 1},
+    ],
+    "Drak": [
+        {"name": "Dračí helma", "icon": "🪖", "slot": "helma", "skill_bonus": 2},
+        {"name": "Dračí meč", "icon": "⚔", "slot": "meč", "skill_bonus": 2},
+        {"name": "Dračí brnění", "icon": "🦺", "slot": "brnění", "skill_bonus": 2},
+    ],
+}
+
 
 def _make_enemy(name: str, player_level: int) -> Enemy:
     base_hp  = 50 + (player_level - 1) * 20
@@ -248,13 +273,18 @@ def _make_enemy(name: str, player_level: int) -> Enemy:
     gold = random.randint(1, 5)
     corpse_name = _CORPSE_NAMES.get(name, f"Mrtvola: {name}")
     corpse_icon = _CORPSE_ICONS.get(name, "💀")
+    loot = [{"name": corpse_name, "icon": corpse_icon}]
+    # 90% šance na drop výzbroje
+    if random.random() < 0.90 and name in _EQUIPMENT_LOOT:
+        equip = random.choice(_EQUIPMENT_LOOT[name])
+        loot.append(dict(equip))
     return Enemy(
         name=name,
         hp=base_hp, max_hp=base_hp,
         attack=base_atk,
         xp_reward=30 + (player_level - 1) * 15,
         loot_gold=gold,
-        loot_items=[{"name": corpse_name, "icon": corpse_icon}],
+        loot_items=loot,
     )
 
 
@@ -444,6 +474,8 @@ class Game:
         # Loot – dočasný loot ke zobrazení
         self._loot_gold:  int  = 0
         self._loot_items: list = []
+        self._loot_selected: list[bool] = []
+        self._loot_item_rects: list[pygame.Rect] = []
 
         # Úkoly starosty
         self._kill_counts: dict[str, int] = {}
@@ -540,11 +572,16 @@ class Game:
             "Zavřít", self.f_sm,
             base_color=(90, 55, 55), hover_color=(125, 75, 75))
 
+        # ---- Loot panel – sebrat vybrané ----
+        self._loot_collect_selected_btn = Button(
+            pygame.Rect(SCREEN_W // 2 - 245, 430, 225, 48),
+            "Sebrat", self.f_md,
+            base_color=(60, 120, 60), hover_color=(80, 160, 80))
         # ---- Loot panel – sebrat vše ----
         self._loot_collect_btn = Button(
-            pygame.Rect(SCREEN_W // 2 - 120, 430, 240, 48),
+            pygame.Rect(SCREEN_W // 2 + 20, 430, 225, 48),
             "Sebrat vše", self.f_md,
-            base_color=(60, 120, 60), hover_color=(80, 160, 80))
+            base_color=(60, 90, 130), hover_color=(80, 120, 170))
 
         # ---- Stats panel – tlačítka pro přidělení dovednostních bodů ----
         self._stats_skill_buttons: list[Button] = []
@@ -603,13 +640,41 @@ class Game:
         self.phase = Phase.INVENTORY
 
     def _collect_loot(self) -> None:
-        """Sebere loot z mrtvého nepřítele do inventáře hráče."""
+        """Sebere veškerý loot do inventáře hráče."""
         self.player.gold += self._loot_gold
         for item in self._loot_items:
             self.player.inventory.append(item)
+            bonus = item.get("skill_bonus", 0)
+            if bonus:
+                self.player.skill_points += bonus
         self._loot_gold  = 0
         self._loot_items = []
+        self._loot_selected = []
+        self._loot_item_rects = []
         self.phase = Phase.VICTORY
+
+    def _collect_loot_selected(self) -> None:
+        """Sebere pouze označené předměty do inventáře hráče."""
+        self.player.gold += self._loot_gold
+        for i, item in enumerate(self._loot_items):
+            if i < len(self._loot_selected) and self._loot_selected[i]:
+                self.player.inventory.append(item)
+                bonus = item.get("skill_bonus", 0)
+                if bonus:
+                    self.player.skill_points += bonus
+        self._loot_gold  = 0
+        self._loot_items = []
+        self._loot_selected = []
+        self._loot_item_rects = []
+        self.phase = Phase.VICTORY
+
+    def _toggle_loot_selection(self, pos: tuple) -> None:
+        """Přepne výběr předmětu v loot panelu."""
+        for i, rect in enumerate(self._loot_item_rects):
+            if rect.collidepoint(pos):
+                if i < len(self._loot_selected):
+                    self._loot_selected[i] = not self._loot_selected[i]
+                break
 
     # ------------------------------------------------------------------
     # Ukládání a načítání hry
@@ -974,6 +1039,10 @@ class Game:
             elif self.phase == Phase.LOOT:
                 if self._loot_collect_btn.handle_event(event):
                     self._collect_loot()
+                elif self._loot_collect_selected_btn.handle_event(event):
+                    self._collect_loot_selected()
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    self._toggle_loot_selection(event.pos)
 
             # ---------- VICTORY / GAME OVER ----------
             elif self.phase in (Phase.VICTORY, Phase.GAME_OVER):
@@ -1070,6 +1139,8 @@ class Game:
             # Příprava loot obrazovky
             self._loot_gold  = self.enemy.loot_gold
             self._loot_items = list(self.enemy.loot_items)
+            self._loot_selected = [False] * len(self._loot_items)
+            self._loot_item_rects = []
             self.phase = Phase.LOOT
         else:
             self.phase        = Phase.ENEMY_TURN
@@ -1166,7 +1237,7 @@ class Game:
         self.btn_menu_load.enabled = self._has_save()
         self.btn_menu_load.draw(self.screen, mouse)
         self.btn_menu_quit.draw(self.screen,  mouse)
-        draw_text_centered(self.screen, "v2.2  |  Python + Pygame",
+        draw_text_centered(self.screen, "v2.3  |  Python + Pygame",
                            self.f_xs, (85, 75, 100), cx, SCREEN_H - 18)
 
     # ===================================================================
@@ -1653,39 +1724,75 @@ class Game:
 
         cx = SCREEN_W // 2
 
-        # Panel
-        panel = pygame.Rect(cx - 250, 100, 500, 400)
+        # Panel (výška závisí na počtu předmětů)
+        item_count = len(self._loot_items)
+        panel_h = 310 + item_count * 40
+        panel = pygame.Rect(cx - 270, 80, 540, panel_h)
         pygame.draw.rect(self.screen, (38, 28, 52), panel, border_radius=16)
         pygame.draw.rect(self.screen, (90, 65, 110), panel, 2, border_radius=16)
 
         # Titulek
         draw_text_centered(self.screen, f"Kořist z {self.enemy.name}",
-                           self.f_lg, GOLD, cx, 140)
+                           self.f_lg, GOLD, cx, 118)
 
         # Zlato
-        y = 195
+        y = 165
         draw_text_centered(self.screen, f"💰  {self._loot_gold} zlaťáků",
                            self.f_md, GOLD, cx, y)
 
         # Oddělovač
-        y += 40
-        pygame.draw.line(self.screen, (90, 65, 110),
-                         (cx - 200, y), (cx + 200, y), 1)
-
-        # Předměty
-        y += 20
-        draw_text_centered(self.screen, "Předměty:",
-                           self.f_sm, SILVER, cx, y)
         y += 35
-        for item in self._loot_items:
+        pygame.draw.line(self.screen, (90, 65, 110),
+                         (cx - 220, y), (cx + 220, y), 1)
+
+        # Předměty s checkboxy
+        y += 18
+        draw_text_centered(self.screen, "Předměty (klikni pro označení):",
+                           self.f_sm, SILVER, cx, y)
+        y += 32
+        self._loot_item_rects = []
+        mouse = pygame.mouse.get_pos()
+        for i, item in enumerate(self._loot_items):
             icon = item.get("icon", "?")
             name = item.get("name", "Neznámý")
-            draw_text_centered(self.screen, f"{icon}  {name}",
-                               self.f_md, TEXT_LT, cx, y)
-            y += 35
+            bonus = item.get("skill_bonus", 0)
+            selected = i < len(self._loot_selected) and self._loot_selected[i]
+
+            # Klikatelný řádek
+            row_rect = pygame.Rect(cx - 240, y - 15, 480, 34)
+            self._loot_item_rects.append(row_rect)
+
+            # Zvýraznění při hoveru
+            if row_rect.collidepoint(mouse):
+                pygame.draw.rect(self.screen, (55, 42, 70), row_rect,
+                                 border_radius=6)
+
+            # Checkbox
+            cb_rect = pygame.Rect(cx - 230, y - 11, 22, 22)
+            cb_bg = (60, 100, 60) if selected else (50, 40, 65)
+            pygame.draw.rect(self.screen, cb_bg, cb_rect, border_radius=4)
+            pygame.draw.rect(self.screen, (110, 90, 140), cb_rect, 2,
+                             border_radius=4)
+            if selected:
+                draw_text_centered(self.screen, "✓", self.f_sm,
+                                   CORRECT_COLOR, cb_rect.centerx,
+                                   cb_rect.centery)
+
+            # Název předmětu
+            text = f"{icon}  {name}"
+            text_col = WHITE if selected else TEXT_LT
+            draw_text_left(self.screen, text, self.f_sm, text_col,
+                           cx - 198, y - 8)
+
+            # Bonus dovednostních bodů
+            if bonus > 0:
+                draw_text_left(self.screen, f"+{bonus} dov. bod",
+                               self.f_xs, GOLD, cx + 150, y - 5)
+
+            y += 38
 
         # XP info
-        y += 15
+        y += 10
         draw_text_centered(self.screen, f"+{self.enemy.xp_reward} XP",
                            self.f_sm, CORRECT_COLOR, cx, y)
 
@@ -1695,8 +1802,13 @@ class Game:
                                f"⬆  LEVEL UP!  Nyní Lv.{self.player.level}",
                                self.f_sm, GOLD, cx, y)
 
-        # Tlačítko Sebrat vše
-        mouse = pygame.mouse.get_pos()
+        # Tlačítka – Sebrat (vybrané) + Sebrat vše
+        btn_y = panel.bottom - 60
+        self._loot_collect_selected_btn.rect.y = btn_y
+        self._loot_collect_selected_btn.enabled = any(self._loot_selected)
+        self._loot_collect_selected_btn.draw(self.screen, mouse)
+
+        self._loot_collect_btn.rect.y = btn_y
         self._loot_collect_btn.draw(self.screen, mouse)
 
     # ===================================================================
