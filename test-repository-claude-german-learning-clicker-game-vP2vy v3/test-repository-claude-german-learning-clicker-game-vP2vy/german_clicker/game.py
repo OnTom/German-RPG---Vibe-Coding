@@ -318,6 +318,7 @@ NPC_DATA: dict[str, dict] = {
         "items": [
             {"label": "Malý lektvar  (+30 HP)",  "cost": 20, "action": "heal_30"},
             {"label": "Velký lektvar (plné HP)",  "cost": 50, "action": "heal_full"},
+            {"label": "📦  Prodat předměty",      "cost": 0,  "action": "open_sell"},
         ],
     },
     "kovar": {
@@ -499,6 +500,7 @@ class Game:
         self._inv_return_phase: Phase = Phase.CAMP
         self._inv_selected_idx: int = -1  # index vybraného předmětu (-1 = nic)
         self._inv_selected_slot: str | None = None  # vybraný slot výzbroje
+        self._inv_sell_mode: bool = False  # prodejní režim (z obchodníka)
 
         # Loot – dočasný loot ke zobrazení
         self._loot_gold:  int  = 0
@@ -653,6 +655,10 @@ class Game:
             pygame.Rect(0, 0, 120, 36),
             "Sundat", self.f_sm,
             base_color=(130, 100, 40), hover_color=(170, 135, 55))
+        self._inv_sell_btn = Button(
+            pygame.Rect(0, 0, 140, 36),
+            "Prodat", self.f_sm,
+            base_color=(180, 145, 40), hover_color=(210, 175, 60))
 
         # ---- Loot panel – sebrat vybrané ----
         self._loot_collect_selected_btn = Button(
@@ -721,6 +727,7 @@ class Game:
         self._inv_return_phase = self.phase
         self._inv_selected_idx = -1
         self._inv_selected_slot = None
+        self._inv_sell_mode = False
         self.phase = Phase.INVENTORY
 
     def _equip_item(self, inv_idx: int) -> None:
@@ -754,6 +761,21 @@ class Game:
         if inv_idx < 0 or inv_idx >= len(self.player.inventory):
             return
         self.player.inventory.pop(inv_idx)
+        self._inv_selected_idx = -1
+
+    @staticmethod
+    def _item_sell_price(item: dict) -> int:
+        """Cena předmětu: 1 základ + 1 za každý bod stat bonusu."""
+        bonuses = item.get("stat_bonuses", {})
+        return 1 + sum(bonuses.values())
+
+    def _sell_item(self, inv_idx: int) -> None:
+        """Prodej předmět z inventáře za zlato."""
+        if inv_idx < 0 or inv_idx >= len(self.player.inventory):
+            return
+        item = self.player.inventory.pop(inv_idx)
+        price = self._item_sell_price(item)
+        self.player.gold += price
         self._inv_selected_idx = -1
 
     def _collect_loot(self) -> None:
@@ -1015,17 +1037,20 @@ class Game:
         else:
             # Obchodník / kovář – platba zlaťáky
             items = data["items"]
-            btn_y = 390
+            btn_y = 330
             for item in items:
-                lbl = f"{item['label']}   [{item['cost']} 💰]"
+                cost = item["cost"]
+                lbl = f"{item['label']}   [{cost} 💰]" if cost > 0 else item["label"]
+                base_c = (180, 145, 40) if item["action"] == "open_sell" else (70, 90, 130)
+                hover_c = (210, 175, 60) if item["action"] == "open_sell" else (95, 120, 170)
                 btn = Button(
                     pygame.Rect(panel_cx - 260, btn_y, 520, 46),
                     lbl, self.f_sm,
-                    base_color=(70, 90, 130), hover_color=(95, 120, 170))
+                    base_color=base_c, hover_color=hover_c)
                 btn._action = item["action"]  # type: ignore[attr-defined]
-                btn._cost   = item["cost"]    # type: ignore[attr-defined]
+                btn._cost   = cost             # type: ignore[attr-defined]
                 self._npc_buttons.append(btn)
-                btn_y += 58
+                btn_y += 52
 
         self._npc_close_btn = Button(
             pygame.Rect(panel_cx - 100, btn_y + 4, 200, 44),
@@ -1037,6 +1062,12 @@ class Game:
         if action.startswith("claim_quest_"):
             quest_idx = int(action.split("_")[-1])
             self._claim_quest(quest_idx)
+            return
+
+        # Prodat předměty – otevře inventář v prodejním režimu
+        if action == "open_sell":
+            self._open_inventory()
+            self._inv_sell_mode = True
             return
 
         # Platba zlaťáky
@@ -1147,7 +1178,12 @@ class Game:
             # ---------- INVENTORY ----------
             elif self.phase == Phase.INVENTORY:
                 if self._inv_close_btn.handle_event(event):
+                    self._inv_sell_mode = False
                     self.phase = self._inv_return_phase
+                elif self._inv_sell_btn.handle_event(event):
+                    if (self._inv_sell_mode
+                            and 0 <= self._inv_selected_idx < len(self.player.inventory)):
+                        self._sell_item(self._inv_selected_idx)
                 elif self._inv_equip_btn.handle_event(event):
                     if 0 <= self._inv_selected_idx < len(self.player.inventory):
                         self._equip_item(self._inv_selected_idx)
@@ -1188,6 +1224,7 @@ class Game:
                         self._inv_selected_idx = -1
                         self._inv_selected_slot = None
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    self._inv_sell_mode = False
                     self.phase = self._inv_return_phase
 
             # ---------- CAMP NPC / CASTLE NPC ----------
@@ -1872,7 +1909,7 @@ class Game:
         self.screen.blit(dim, (0, 0))
 
         # Panel – vyšší pro starostu (kvůli úkolům)
-        panel_h = 460 if self.current_npc == "starosta" else 420
+        panel_h = 460 if self.current_npc == "starosta" else 450
         panel = pygame.Rect(SCREEN_W // 2 - 290, 55, 580, panel_h)
         pygame.draw.rect(self.screen, (38, 28, 52), panel, border_radius=16)
         pygame.draw.rect(self.screen, (90, 65, 110), panel, 2, border_radius=16)
@@ -2083,7 +2120,8 @@ class Game:
         cx = SCREEN_W // 2
 
         # Titulek + zlato
-        draw_text_centered(self.screen, "Inventář",
+        title = "Prodat předměty" if self._inv_sell_mode else "Inventář"
+        draw_text_centered(self.screen, title,
                            self.f_lg, GOLD, cx, 60)
         draw_text_centered(self.screen, f"💰 {self.player.gold}",
                            self.f_sm, GOLD, cx, 92)
@@ -2258,45 +2296,57 @@ class Game:
                                    self.f_xs, CORRECT_COLOR,
                                    grid_cx, bottom_y + 40)
 
-            # Porovnání se stávající výzbrojí (stat diff)
-            if is_equippable:
-                current_equipped = self.player.equipment.get(slot)
-                old_bonuses = current_equipped.get("stat_bonuses", {}) if current_equipped else {}
-                new_bonuses = bonuses
-                # Spočítej rozdíly
-                all_stats = set(list(old_bonuses.keys()) + list(new_bonuses.keys()))
-                diff_parts = []
-                for stat in sorted(all_stats):
-                    old_val = old_bonuses.get(stat, 0)
-                    new_val = new_bonuses.get(stat, 0)
-                    diff = new_val - old_val
-                    if diff != 0:
-                        label = self._STAT_LABELS.get(stat, stat)
-                        sign = "+" if diff > 0 else ""
-                        col = CORRECT_COLOR if diff > 0 else WRONG_COLOR
-                        diff_parts.append((f"{sign}{diff} {label}", col))
-
-                if diff_parts:
-                    dx = grid_cx - sum(self.f_xs.size(t)[0] for t, _ in diff_parts) // 2
-                    dy = bottom_y + 56
-                    for text, col in diff_parts:
-                        draw_text_left(self.screen, text, self.f_xs, col, dx, dy)
-                        dx += self.f_xs.size(text)[0] + 10
-                elif current_equipped:
-                    draw_text_centered(self.screen, "(beze změny)",
-                                       self.f_xs, (100, 90, 120),
-                                       grid_cx, bottom_y + 56)
-
-            # Tlačítka Vyzbrojit / Zahodit
-            btn_y = bottom_y + 74
-            if is_equippable:
-                self._inv_equip_btn.rect.topleft = (grid_cx - 125, btn_y)
-                self._inv_equip_btn.draw(self.screen, mouse)
-                self._inv_discard_btn.rect.topleft = (grid_cx + 15, btn_y)
-                self._inv_discard_btn.draw(self.screen, mouse)
+            if self._inv_sell_mode:
+                # Prodejní režim – zobraz cenu a tlačítko Prodat
+                price = self._item_sell_price(item)
+                draw_text_centered(self.screen,
+                                   f"Cena: {price} 💰",
+                                   self.f_sm, (210, 180, 60),
+                                   grid_cx, bottom_y + 56)
+                btn_y = bottom_y + 74
+                self._inv_sell_btn.text = f"Prodat za {price} 💰"
+                self._inv_sell_btn.rect.topleft = (grid_cx - 70, btn_y)
+                self._inv_sell_btn.draw(self.screen, mouse)
             else:
-                self._inv_discard_btn.rect.topleft = (grid_cx - 50, btn_y)
-                self._inv_discard_btn.draw(self.screen, mouse)
+                # Porovnání se stávající výzbrojí (stat diff)
+                if is_equippable:
+                    current_equipped = self.player.equipment.get(slot)
+                    old_bonuses = current_equipped.get("stat_bonuses", {}) if current_equipped else {}
+                    new_bonuses = bonuses
+                    # Spočítej rozdíly
+                    all_stats = set(list(old_bonuses.keys()) + list(new_bonuses.keys()))
+                    diff_parts = []
+                    for stat in sorted(all_stats):
+                        old_val = old_bonuses.get(stat, 0)
+                        new_val = new_bonuses.get(stat, 0)
+                        diff = new_val - old_val
+                        if diff != 0:
+                            label = self._STAT_LABELS.get(stat, stat)
+                            sign = "+" if diff > 0 else ""
+                            col = CORRECT_COLOR if diff > 0 else WRONG_COLOR
+                            diff_parts.append((f"{sign}{diff} {label}", col))
+
+                    if diff_parts:
+                        dx = grid_cx - sum(self.f_xs.size(t)[0] for t, _ in diff_parts) // 2
+                        dy = bottom_y + 56
+                        for text, col in diff_parts:
+                            draw_text_left(self.screen, text, self.f_xs, col, dx, dy)
+                            dx += self.f_xs.size(text)[0] + 10
+                    elif current_equipped:
+                        draw_text_centered(self.screen, "(beze změny)",
+                                           self.f_xs, (100, 90, 120),
+                                           grid_cx, bottom_y + 56)
+
+                # Tlačítka Vyzbrojit / Zahodit
+                btn_y = bottom_y + 74
+                if is_equippable:
+                    self._inv_equip_btn.rect.topleft = (grid_cx - 125, btn_y)
+                    self._inv_equip_btn.draw(self.screen, mouse)
+                    self._inv_discard_btn.rect.topleft = (grid_cx + 15, btn_y)
+                    self._inv_discard_btn.draw(self.screen, mouse)
+                else:
+                    self._inv_discard_btn.rect.topleft = (grid_cx - 50, btn_y)
+                    self._inv_discard_btn.draw(self.screen, mouse)
         elif 0 <= hovered_item_idx < len(self.player.inventory):
             # Jen hover – zobraz název
             hname = self.player.inventory[hovered_item_idx].get("name", "?")
