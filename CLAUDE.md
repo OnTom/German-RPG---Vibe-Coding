@@ -34,7 +34,7 @@ python "test-repository-claude-german-learning-clicker-game-vP2vy v3/test-reposi
 
 ## Architecture
 
-- **State machine**: `game.py` uses a `Phase` enum with 16 states: MENU, CAMP, CAMP_NPC, STATS, INVENTORY, MAP, PLAYER_CHOOSE, PLAYER_TRANSLATE, RESOLVE_PLAYER, ENEMY_TURN, RESOLVE_ENEMY, LOOT, CAVE_CHOICE, FLEE_RESOLVE, VICTORY, GAME_OVER
+- **State machine**: `game.py` uses a `Phase` enum with 18 states: MENU, CAMP, CAMP_NPC, CASTLE, CASTLE_NPC, STATS, INVENTORY, MAP, PLAYER_CHOOSE, PLAYER_TRANSLATE, RESOLVE_PLAYER, ENEMY_TURN, RESOLVE_ENEMY, LOOT, CAVE_CHOICE, FLEE_RESOLVE, VICTORY, GAME_OVER
 - **Game loop**: Standard Pygame loop -- event handling, update, draw at 60 FPS
 - **Sprite system**: Procedural pixel art rendered from ASCII grids with color maps (no external image assets)
 - **Translation validation**: Normalizes German umlauts (ae->ä, oe->ö, ue->ü, ss->ß) and strips articles (der/die/das/ein/eine)
@@ -66,6 +66,7 @@ No test suite or linting configuration exists. There is no CI/CD pipeline. Use `
 - **Combat**: 5 enemies fought in sequence: Šnek (Snail), Pavouk (Spider), Ještěrka (Lizard), Netopýr (Bat), Drak (Dragon)
 - **Battle actions**: Attack (translate word), Defend (reduce damage), Flee (50% escape chance, risk of taking damage)
 - **Cave choice**: After defeating an enemy and collecting loot, player chooses to continue fighting or return to camp
+- **Locations**: Base camp (always accessible), Castle/Hrad (unlocks at level 3) -- both share same NPC set
 - **NPC camp**: Merchant (healing), Blacksmith (upgrades), Mayor (quests), Inn (save for 10 gold)
 - **Equipment system**: 7 slots (helma, meč, štít, brnění, boty, prsten, náhrdelník) with stat bonuses applied only when worn
 - **Skill system**: 5 skills (síla, charisma, moudrost, houževnatost, agility) with allocatable skill points on level up; síla adds +3 attack, houževnatost adds +2 defense

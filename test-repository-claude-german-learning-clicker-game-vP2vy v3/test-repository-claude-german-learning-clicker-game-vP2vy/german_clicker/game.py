@@ -402,6 +402,8 @@ class Phase(Enum):
     MENU             = "menu"
     CAMP             = "camp"
     CAMP_NPC         = "camp_npc"
+    CASTLE           = "castle"
+    CASTLE_NPC       = "castle_npc"
     STATS            = "stats"
     INVENTORY        = "inventory"
     MAP              = "map"
@@ -421,8 +423,10 @@ class Phase(Enum):
 # Mapa – lokace
 # ---------------------------------------------------------------------------
 MAP_LOCATIONS = [
-    {"id": "camp",    "name": "Základní kemp",  "pos": (220, 260), "phase": Phase.CAMP},
-    {"id": "dungeon", "name": "Temná jeskyně",  "pos": (690, 260), "phase": Phase.PLAYER_CHOOSE},
+    {"id": "camp",    "name": "Základní kemp",  "pos": (170, 320), "phase": Phase.CAMP},
+    {"id": "dungeon", "name": "Temná jeskyně",  "pos": (450, 340), "phase": Phase.PLAYER_CHOOSE},
+    {"id": "castle",  "name": "Hrad",           "pos": (730, 250), "phase": Phase.CASTLE,
+     "min_level": 3},
 ]
 MAP_NODE_R = 42   # poloměr klikatelné oblasti na mapě
 
@@ -470,12 +474,14 @@ class Game:
         self._enemy_delay:   int       = 0
         self._level_up_flag: bool      = False
 
-        # Camp proměnné
+        # Camp / NPC proměnné
         self.current_npc: str = ""
         self._npc_buttons: list[Button] = []
         self._npc_close_btn: Button | None = None
         self._npc_feedback: str = ""
         self._npc_feedback_timer: int = 0
+        self._npc_return_phase: Phase = Phase.CAMP
+        self._stats_return_phase: Phase = Phase.CAMP
 
         # Campfire animace
         self._fire_frame: int = 0
@@ -557,6 +563,28 @@ class Game:
             "🍺  Hospoda", self.f_sm,
             base_color=(130, 90, 40), hover_color=(170, 120, 55))
         self.btn_leave = Button(
+            pygame.Rect(x0 + (btn_w + gap) * 4, camp_y + 30, btn_w, 52),
+            "🗺  Odejít", self.f_sm,
+            base_color=(65, 105, 65), hover_color=(85, 135, 85))
+
+        # ---- Castle (Hrad) ----
+        self.btn_castle_merchant = Button(
+            pygame.Rect(x0, camp_y + 30, btn_w, 52),
+            "🧺  Obchodník", self.f_sm,
+            base_color=(110, 85, 45), hover_color=(145, 115, 60))
+        self.btn_castle_blacksmith = Button(
+            pygame.Rect(x0 + btn_w + gap, camp_y + 30, btn_w, 52),
+            "⚒  Kovář", self.f_sm,
+            base_color=(90, 80, 70), hover_color=(120, 105, 90))
+        self.btn_castle_mayor = Button(
+            pygame.Rect(x0 + (btn_w + gap) * 2, camp_y + 30, btn_w, 52),
+            "📜  Starosta", self.f_sm,
+            base_color=(60, 90, 140), hover_color=(80, 120, 175))
+        self.btn_castle_inn = Button(
+            pygame.Rect(x0 + (btn_w + gap) * 3, camp_y + 30, btn_w, 52),
+            "🍺  Hospoda", self.f_sm,
+            base_color=(130, 90, 40), hover_color=(170, 120, 55))
+        self.btn_castle_leave = Button(
             pygame.Rect(x0 + (btn_w + gap) * 4, camp_y + 30, btn_w, 52),
             "🗺  Odejít", self.f_sm,
             base_color=(65, 105, 65), hover_color=(85, 135, 85))
@@ -941,12 +969,15 @@ class Game:
     # ------------------------------------------------------------------
     # NPC logika
     # ------------------------------------------------------------------
-    def _open_npc(self, npc_id: str) -> None:
+    def _open_npc(self, npc_id: str,
+                  return_phase: Phase = Phase.CAMP) -> None:
         self.current_npc      = npc_id
+        self._npc_return_phase = return_phase
         self._npc_feedback    = ""
         self._npc_feedback_timer = 0
         self._build_npc_buttons()
-        self.phase = Phase.CAMP_NPC
+        self.phase = Phase.CAMP_NPC if return_phase == Phase.CAMP \
+            else Phase.CASTLE_NPC
 
     def _build_npc_buttons(self) -> None:
         data  = NPC_DATA[self.current_npc]
@@ -1071,6 +1102,7 @@ class Game:
                 if self.btn_inventory.handle_event(event):
                     self._open_inventory()
                 elif self.btn_stats.handle_event(event):
+                    self._stats_return_phase = Phase.CAMP
                     self.phase = Phase.STATS
                 elif self.btn_merchant.handle_event(event):
                     self._open_npc("obchodnik")
@@ -1083,6 +1115,24 @@ class Game:
                 elif self.btn_leave.handle_event(event):
                     self.phase = Phase.MAP
 
+            # ---------- CASTLE (Hrad) ----------
+            elif self.phase == Phase.CASTLE:
+                if self.btn_inventory.handle_event(event):
+                    self._open_inventory()
+                elif self.btn_stats.handle_event(event):
+                    self._stats_return_phase = Phase.CASTLE
+                    self.phase = Phase.STATS
+                elif self.btn_castle_merchant.handle_event(event):
+                    self._open_npc("obchodnik", return_phase=Phase.CASTLE)
+                elif self.btn_castle_blacksmith.handle_event(event):
+                    self._open_npc("kovar", return_phase=Phase.CASTLE)
+                elif self.btn_castle_mayor.handle_event(event):
+                    self._open_npc("starosta", return_phase=Phase.CASTLE)
+                elif self.btn_castle_inn.handle_event(event):
+                    self._open_npc("hospoda", return_phase=Phase.CASTLE)
+                elif self.btn_castle_leave.handle_event(event):
+                    self.phase = Phase.MAP
+
             # ---------- STATS ----------
             elif self.phase == Phase.STATS:
                 for btn in self._stats_skill_buttons:
@@ -1090,9 +1140,9 @@ class Game:
                         self._handle_skill_up(
                             btn._skill_attr)  # type: ignore[attr-defined]
                 if self._stats_close_btn and self._stats_close_btn.handle_event(event):
-                    self.phase = Phase.CAMP
+                    self.phase = getattr(self, "_stats_return_phase", Phase.CAMP)
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                    self.phase = Phase.CAMP
+                    self.phase = getattr(self, "_stats_return_phase", Phase.CAMP)
 
             # ---------- INVENTORY ----------
             elif self.phase == Phase.INVENTORY:
@@ -1140,14 +1190,14 @@ class Game:
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     self.phase = self._inv_return_phase
 
-            # ---------- CAMP NPC ----------
-            elif self.phase == Phase.CAMP_NPC:
+            # ---------- CAMP NPC / CASTLE NPC ----------
+            elif self.phase in (Phase.CAMP_NPC, Phase.CASTLE_NPC):
                 for btn in self._npc_buttons:
                     if btn.handle_event(event):
                         self._handle_npc_action(
                             btn._action, btn._cost)  # type: ignore[attr-defined]
                 if self._npc_close_btn and self._npc_close_btn.handle_event(event):
-                    self.phase = Phase.CAMP
+                    self.phase = self._npc_return_phase
 
             # ---------- MAP ----------
             elif self.phase == Phase.MAP:
@@ -1158,6 +1208,12 @@ class Game:
                         dx = mouse[0] - loc["pos"][0]
                         dy = mouse[1] - loc["pos"][1]
                         if dx * dx + dy * dy <= MAP_NODE_R * MAP_NODE_R:
+                            min_lv = loc.get("min_level", 1)
+                            if self.player.level < min_lv:
+                                self.message.show(
+                                    f"🔒  Vyžaduje úroveň {min_lv}!",
+                                    (210, 55, 55))
+                                break
                             target = loc["phase"]
                             if target == Phase.PLAYER_CHOOSE:
                                 self._start_battle()
@@ -1213,7 +1269,8 @@ class Game:
         self.text_input.update(dt)
 
         # Campfire animace
-        if self.phase in (Phase.CAMP, Phase.CAMP_NPC, Phase.STATS, Phase.INVENTORY):
+        if self.phase in (Phase.CAMP, Phase.CAMP_NPC, Phase.STATS, Phase.INVENTORY,
+                         Phase.CASTLE, Phase.CASTLE_NPC):
             self._fire_timer += dt
             if self._fire_timer >= FIRE_FRAME_MS:
                 self._fire_timer = 0
@@ -1353,18 +1410,33 @@ class Game:
         if self.phase == Phase.MENU:
             self._draw_cave_bg()
             self._draw_menu()
-        elif self.phase in (Phase.CAMP, Phase.CAMP_NPC, Phase.STATS):
+        elif self.phase in (Phase.CAMP, Phase.CAMP_NPC):
             self._draw_camp_bg()
             self._draw_camp_ui()
             if self.phase == Phase.CAMP_NPC:
                 self._draw_npc_overlay()
-            elif self.phase == Phase.STATS:
-                self._draw_stats_overlay()
+        elif self.phase == Phase.STATS:
+            ret = getattr(self, "_stats_return_phase", Phase.CAMP)
+            if ret == Phase.CASTLE:
+                self._draw_castle_bg()
+                self._draw_castle_ui()
+            else:
+                self._draw_camp_bg()
+                self._draw_camp_ui()
+            self._draw_stats_overlay()
+        elif self.phase in (Phase.CASTLE, Phase.CASTLE_NPC):
+            self._draw_castle_bg()
+            self._draw_castle_ui()
+            if self.phase == Phase.CASTLE_NPC:
+                self._draw_npc_overlay()
         elif self.phase == Phase.INVENTORY:
             # Vykreslíme pozadí podle původní fáze
             if self._inv_return_phase in (Phase.CAMP, Phase.CAMP_NPC, Phase.STATS):
                 self._draw_camp_bg()
                 self._draw_camp_ui()
+            elif self._inv_return_phase in (Phase.CASTLE, Phase.CASTLE_NPC):
+                self._draw_castle_bg()
+                self._draw_castle_ui()
             elif self._inv_return_phase == Phase.MAP:
                 self._draw_map()
             else:
@@ -1373,6 +1445,7 @@ class Game:
             self._draw_inventory_overlay()
         elif self.phase == Phase.MAP:
             self._draw_map()
+            self.message.draw(self.screen)
         else:
             # Battle phases (including LOOT)
             self._draw_cave_bg()
@@ -1593,6 +1666,199 @@ class Game:
         self.btn_mayor.draw(self.screen, mouse)
         self.btn_inn.draw(self.screen, mouse)
         self.btn_leave.draw(self.screen, mouse)
+
+    # ===================================================================
+    # CASTLE (Hrad) – pozadí
+    # ===================================================================
+    def _draw_castle_bg(self) -> None:
+        w, h = SCREEN_W, SCREEN_H
+        ground_y = h - 115
+
+        # Noční obloha
+        for i, col in enumerate([(18, 14, 35), (24, 18, 44),
+                                   (28, 22, 48), (22, 16, 40)]):
+            band = ground_y // 4
+            pygame.draw.rect(self.screen, col, (0, i * band, w, band + 2))
+
+        # Hvězdy
+        for (sx, sy) in self._stars:
+            if sy < ground_y:
+                pygame.draw.circle(self.screen, (230, 225, 200), (sx, sy), 1)
+
+        # Kamenná zeď hradu (pozadí)
+        wall_col = (85, 75, 68)
+        wall_dark = (65, 58, 52)
+        pygame.draw.rect(self.screen, wall_col, (0, ground_y - 200, w, 200))
+        # Kamenné bloky (textura)
+        for by in range(ground_y - 200, ground_y, 28):
+            off = 30 if ((by - (ground_y - 200)) // 28) % 2 else 0
+            for bx in range(off - 60, w, 60):
+                pygame.draw.rect(self.screen, wall_dark,
+                                 (bx, by, 60, 28), 1)
+
+        # Věž vlevo
+        tw, th = 80, 250
+        tx = 60
+        ty = ground_y - th
+        pygame.draw.rect(self.screen, (75, 68, 62), (tx, ty, tw, th))
+        # Cimbuří věže
+        for cx in range(tx, tx + tw, 20):
+            pygame.draw.rect(self.screen, (75, 68, 62),
+                             (cx, ty - 18, 14, 18))
+        # Okna věže
+        for wy in [ty + 40, ty + 100, ty + 160]:
+            pygame.draw.rect(self.screen, (30, 25, 40),
+                             (tx + tw // 2 - 8, wy, 16, 24),
+                             border_radius=8)
+            pygame.draw.rect(self.screen, (50, 42, 35),
+                             (tx + tw // 2 - 8, wy, 16, 24), 1,
+                             border_radius=8)
+
+        # Věž vpravo
+        tx2 = w - 60 - tw
+        pygame.draw.rect(self.screen, (75, 68, 62), (tx2, ty, tw, th))
+        for cx in range(tx2, tx2 + tw, 20):
+            pygame.draw.rect(self.screen, (75, 68, 62),
+                             (cx, ty - 18, 14, 18))
+        for wy in [ty + 40, ty + 100, ty + 160]:
+            pygame.draw.rect(self.screen, (30, 25, 40),
+                             (tx2 + tw // 2 - 8, wy, 16, 24),
+                             border_radius=8)
+            pygame.draw.rect(self.screen, (50, 42, 35),
+                             (tx2 + tw // 2 - 8, wy, 16, 24), 1,
+                             border_radius=8)
+
+        # Hlavní cimbuří na zdi
+        for cx in range(0, w, 24):
+            pygame.draw.rect(self.screen, wall_col,
+                             (cx, ground_y - 215, 16, 18))
+
+        # Brána hradu (velký oblouk uprostřed)
+        gate_w, gate_h = 100, 120
+        gate_x = w // 2 - gate_w // 2
+        gate_y = ground_y - gate_h
+        pygame.draw.rect(self.screen, (35, 28, 22),
+                         (gate_x, gate_y + 30, gate_w, gate_h - 30))
+        pygame.draw.ellipse(self.screen, (35, 28, 22),
+                            (gate_x, gate_y, gate_w, 65))
+        # Mříž brány
+        for gx in range(gate_x + 12, gate_x + gate_w - 10, 16):
+            pygame.draw.line(self.screen, (100, 90, 75),
+                             (gx, gate_y + 15), (gx, ground_y), 2)
+
+        # Pochodně u brány
+        for torch_x in [gate_x - 18, gate_x + gate_w + 10]:
+            pygame.draw.rect(self.screen, (100, 60, 28),
+                             (torch_x, gate_y + 10, 8, 30))
+            # Plamen
+            if self._fire_frame == 0:
+                flame = [(torch_x + 4, gate_y - 8),
+                         (torch_x - 3, gate_y + 10),
+                         (torch_x + 11, gate_y + 10)]
+            else:
+                flame = [(torch_x + 4, gate_y - 10),
+                         (torch_x - 5, gate_y + 10),
+                         (torch_x + 13, gate_y + 10)]
+            pygame.draw.polygon(self.screen, (210, 100, 15), flame)
+            inner_f = [(torch_x + 4, gate_y),
+                       (torch_x, gate_y + 10),
+                       (torch_x + 8, gate_y + 10)]
+            pygame.draw.polygon(self.screen, (255, 195, 40), inner_f)
+
+        # Zem (kamenná dlažba)
+        pygame.draw.rect(self.screen, (60, 55, 48), (0, ground_y, w, 14))
+        pygame.draw.rect(self.screen, (50, 42, 38), (0, ground_y + 14, w, h))
+
+        # Panel hradu (spodní lišta)
+        pygame.draw.rect(self.screen, (33, 24, 44),
+                         (0, h - 115, w, 115))
+        pygame.draw.line(self.screen, (70, 52, 85),
+                         (0, h - 115), (w, h - 115), 2)
+
+    def _draw_castle_ui(self) -> None:
+        """Spodní lišta hradu s tlačítky a stavem hráče."""
+        cx = SCREEN_W // 2
+        h  = SCREEN_H
+
+        # === Horní HUD s životy, XP, levelem a zlatem ===
+        hud_h = 52
+        hud_surf = pygame.Surface((SCREEN_W, hud_h), pygame.SRCALPHA)
+        hud_surf.fill((20, 14, 30, 180))
+        self.screen.blit(hud_surf, (0, 0))
+        pygame.draw.line(self.screen, (70, 52, 85),
+                         (0, hud_h), (SCREEN_W, hud_h), 1)
+
+        # Level
+        draw_text_left(self.screen, f"Lv. {self.player.level}",
+                       self.f_md, GOLD, 15, 14)
+
+        # HP bar
+        hp_bar_x, hp_bar_y, hp_bar_w, hp_bar_h = 110, 10, 200, 14
+        hp_ratio = self.player.hp / max(1, self.player.max_hp)
+        draw_text_left(self.screen, "❤", self.f_sm, (210, 55, 55),
+                       hp_bar_x - 2, hp_bar_y + 14)
+        pygame.draw.rect(self.screen, (30, 22, 40),
+                         (hp_bar_x, hp_bar_y, hp_bar_w, hp_bar_h),
+                         border_radius=4)
+        hp_col = ((70, 200, 80) if hp_ratio > 0.5
+                  else (220, 190, 40) if hp_ratio > 0.25
+                  else (210, 55, 55))
+        if hp_ratio > 0:
+            pygame.draw.rect(self.screen, hp_col,
+                             (hp_bar_x, hp_bar_y,
+                              int(hp_bar_w * hp_ratio), hp_bar_h),
+                             border_radius=4)
+        draw_text_left(self.screen,
+                       f"{self.player.hp}/{self.player.max_hp}",
+                       self.f_xs, WHITE,
+                       hp_bar_x + 4, hp_bar_y - 1)
+
+        # XP bar
+        xp_bar_x, xp_bar_y, xp_bar_w, xp_bar_h = 110, 30, 200, 10
+        xp_ratio = self.player.xp / max(1, self.player.xp_to_next)
+        draw_text_left(self.screen, "✦", self.f_xs, SILVER,
+                       xp_bar_x - 2, xp_bar_y + 6)
+        pygame.draw.rect(self.screen, (30, 22, 40),
+                         (xp_bar_x, xp_bar_y, xp_bar_w, xp_bar_h),
+                         border_radius=3)
+        if xp_ratio > 0:
+            pygame.draw.rect(self.screen, (100, 140, 220),
+                             (xp_bar_x, xp_bar_y,
+                              int(xp_bar_w * min(1.0, xp_ratio)), xp_bar_h),
+                             border_radius=3)
+        draw_text_left(self.screen,
+                       f"{self.player.xp}/{self.player.xp_to_next}",
+                       self.f_xs, SILVER,
+                       xp_bar_x + 4, xp_bar_y - 2)
+
+        # Gold
+        draw_text_left(self.screen, f"💰  {self.player.gold}",
+                       self.f_sm, GOLD, 330, 14)
+
+        # Název místa
+        draw_text_centered(self.screen, "🏰  Hrad",
+                           self.f_md, GOLD, cx, h - 105)
+
+        mouse = pygame.mouse.get_pos()
+
+        # Inventář tlačítko – pravý horní roh
+        self.btn_inventory.draw(self.screen, mouse)
+
+        # Stats tlačítko – pravý horní roh
+        self.btn_stats.draw(self.screen, mouse)
+        # Indikátor dostupných bodů
+        if self.player.skill_points > 0:
+            badge_x = self.btn_stats.rect.right - 8
+            badge_y = self.btn_stats.rect.top - 4
+            pygame.draw.circle(self.screen, (220, 60, 60), (badge_x, badge_y), 10)
+            draw_text_centered(self.screen, str(self.player.skill_points),
+                               self.f_xs, WHITE, badge_x, badge_y)
+
+        self.btn_castle_merchant.draw(self.screen, mouse)
+        self.btn_castle_blacksmith.draw(self.screen, mouse)
+        self.btn_castle_mayor.draw(self.screen, mouse)
+        self.btn_castle_inn.draw(self.screen, mouse)
+        self.btn_castle_leave.draw(self.screen, mouse)
 
     # ===================================================================
     # CAMP – NPC overlay
@@ -2158,24 +2424,31 @@ class Game:
             pygame.draw.line(self.screen, (175, 150, 100), (0, gy), (w, gy), 1)
 
         # Lesy (zelené shluky na okrajích)
-        self._draw_map_forest(60, 200, 7)
-        self._draw_map_forest(100, 390, 5)
-        self._draw_map_forest(820, 180, 6)
-        self._draw_map_forest(790, 400, 5)
+        self._draw_map_forest(60, 260, 7)
+        self._draw_map_forest(100, 450, 5)
+        self._draw_map_forest(820, 440, 5)
 
-        # Hory uprostřed nahoře
-        self._draw_map_mountains(400, 130)
-        self._draw_map_mountains(490, 120)
-        self._draw_map_mountains(450, 145)
+        # Hory nahoře
+        self._draw_map_mountains(350, 140)
+        self._draw_map_mountains(440, 130)
+        self._draw_map_mountains(680, 150)
+        self._draw_map_mountains(750, 140)
 
-        # Cesta mezi lokacemi
+        # Cesty mezi lokacemi
         camp_pos    = MAP_LOCATIONS[0]["pos"]
         dungeon_pos = MAP_LOCATIONS[1]["pos"]
-        # Tečkovaná cesta (dirt)
+        castle_pos  = MAP_LOCATIONS[2]["pos"]
+        # Cesta kemp → jeskyně
         for t in range(0, 100, 6):
             px = int(camp_pos[0] + (dungeon_pos[0] - camp_pos[0]) * t / 100)
             py = int(camp_pos[1] + (dungeon_pos[1] - camp_pos[1]) * t / 100
-                     + 18 * (abs(t - 50) / 50))  # mírný oblouk
+                     + 18 * (abs(t - 50) / 50))
+            pygame.draw.circle(self.screen, (140, 110, 70), (px, py), 3)
+        # Cesta jeskyně → hrad
+        for t in range(0, 100, 6):
+            px = int(dungeon_pos[0] + (castle_pos[0] - dungeon_pos[0]) * t / 100)
+            py = int(dungeon_pos[1] + (castle_pos[1] - dungeon_pos[1]) * t / 100
+                     - 20 * (abs(t - 50) / 50))
             pygame.draw.circle(self.screen, (140, 110, 70), (px, py), 3)
 
         # Nápis mapy
@@ -2215,19 +2488,31 @@ class Game:
     def _draw_map_node(self, loc: dict) -> None:
         px, py  = loc["pos"]
         is_hover = self._map_hover == loc["id"]
-        is_dungeon = loc["id"] == "dungeon"
+        loc_id = loc["id"]
+        min_lv = loc.get("min_level", 1)
+        locked = self.player.level < min_lv
 
         # Záře při hoveru
-        if is_hover:
+        if is_hover and not locked:
             glow = pygame.Surface((MAP_NODE_R * 4, MAP_NODE_R * 4), pygame.SRCALPHA)
             pygame.draw.circle(glow, (255, 220, 100, 60),
                                (MAP_NODE_R * 2, MAP_NODE_R * 2), MAP_NODE_R * 2)
             self.screen.blit(glow, (px - MAP_NODE_R * 2, py - MAP_NODE_R * 2))
 
-        # Kruh uzlu
-        outer_col = (200, 80, 80) if is_dungeon else (80, 140, 80)
-        inner_col = (240, 120, 100) if is_dungeon else (120, 190, 120)
-        if is_hover:
+        # Barvy podle typu lokace
+        if locked:
+            outer_col = (90, 80, 75)
+            inner_col = (110, 100, 95)
+        elif loc_id == "dungeon":
+            outer_col = (200, 80, 80)
+            inner_col = (240, 120, 100)
+        elif loc_id == "castle":
+            outer_col = (120, 100, 170)
+            inner_col = (160, 140, 210)
+        else:
+            outer_col = (80, 140, 80)
+            inner_col = (120, 190, 120)
+        if is_hover and not locked:
             outer_col = tuple(min(255, c + 30) for c in outer_col)
             inner_col = tuple(min(255, c + 30) for c in inner_col)
 
@@ -2237,18 +2522,42 @@ class Game:
         pygame.draw.circle(self.screen, (80, 55, 30),   (px, py), MAP_NODE_R, 3)
 
         # Ikona uvnitř uzlu
-        icon = "🕳" if is_dungeon else "⛺"
+        if locked:
+            icon = "🔒"
+        elif loc_id == "dungeon":
+            icon = "🕳"
+        elif loc_id == "castle":
+            icon = "🏰"
+        else:
+            icon = "⛺"
         draw_text_centered(self.screen, icon, self.f_md,
                            WHITE, px, py)
 
         # Label pod uzlem
-        label_col = (200, 80, 80) if is_dungeon else (40, 100, 40)
+        if locked:
+            label_col = (120, 100, 80)
+        elif loc_id == "dungeon":
+            label_col = (200, 80, 80)
+        elif loc_id == "castle":
+            label_col = (100, 80, 150)
+        else:
+            label_col = (40, 100, 40)
         draw_text_centered(self.screen, loc["name"], self.f_sm,
                            label_col, px, py + MAP_NODE_R + 16)
 
-        # "Klikni" nápověda při hoveru
-        if is_hover:
-            action = "Vstoupit do bitvy" if is_dungeon else "Vrátit se do kempu"
+        # Info pod labelem
+        if locked:
+            draw_text_centered(self.screen,
+                               f"🔒 Úroveň {min_lv}",
+                               self.f_xs, (160, 100, 60),
+                               px, py + MAP_NODE_R + 38)
+        elif is_hover:
+            if loc_id == "dungeon":
+                action = "Vstoupit do bitvy"
+            elif loc_id == "castle":
+                action = "Navštívit hrad"
+            else:
+                action = "Vrátit se do kempu"
             draw_text_centered(self.screen, action, self.f_xs,
                                (80, 55, 30), px, py + MAP_NODE_R + 38)
 
