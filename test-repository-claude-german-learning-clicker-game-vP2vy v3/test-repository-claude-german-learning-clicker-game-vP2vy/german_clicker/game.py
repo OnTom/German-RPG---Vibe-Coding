@@ -492,6 +492,7 @@ class Game:
         # Inventář – fáze, ze které se otevřel (pro návrat)
         self._inv_return_phase: Phase = Phase.CAMP
         self._inv_selected_idx: int = -1  # index vybraného předmětu (-1 = nic)
+        self._inv_selected_slot: str | None = None  # vybraný slot výzbroje
 
         # Loot – dočasný loot ke zobrazení
         self._loot_gold:  int  = 0
@@ -691,6 +692,7 @@ class Game:
         """Otevře inventář z jakékoli obrazovky."""
         self._inv_return_phase = self.phase
         self._inv_selected_idx = -1
+        self._inv_selected_slot = None
         self.phase = Phase.INVENTORY
 
     def _equip_item(self, inv_idx: int) -> None:
@@ -1106,19 +1108,35 @@ class Game:
                     slot = getattr(self._inv_unequip_btn, "_slot", None)
                     if slot:
                         self._unequip_item(slot)
+                        self._inv_selected_slot = None
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    # Klik na předmět v mřížce
                     clicked = False
+                    # Klik na předmět v mřížce
                     for i, rect in enumerate(
                             getattr(self, "_inv_item_rects", [])):
                         if (rect.collidepoint(event.pos)
                                 and i < len(self.player.inventory)):
                             self._inv_selected_idx = (
                                 -1 if self._inv_selected_idx == i else i)
+                            self._inv_selected_slot = None
                             clicked = True
                             break
+                    # Klik na slot výzbroje
+                    if not clicked:
+                        for slot_name, rect in getattr(
+                                self, "_inv_slot_rects", {}).items():
+                            if rect.collidepoint(event.pos):
+                                equipped = self.player.equipment.get(slot_name)
+                                if equipped:
+                                    self._inv_selected_slot = (
+                                        None if self._inv_selected_slot == slot_name
+                                        else slot_name)
+                                    self._inv_selected_idx = -1
+                                    clicked = True
+                                break
                     if not clicked:
                         self._inv_selected_idx = -1
+                        self._inv_selected_slot = None
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     self.phase = self._inv_return_phase
 
@@ -1496,35 +1514,69 @@ class Game:
         cx = SCREEN_W // 2
         h  = SCREEN_H
 
-        # Název místa
-        draw_text_centered(self.screen, "⛺  Základní kemp",
-                           self.f_md, GOLD, cx, h - 105)
+        # === Horní HUD s životy, XP, levelem a zlatem ===
+        hud_h = 52
+        hud_surf = pygame.Surface((SCREEN_W, hud_h), pygame.SRCALPHA)
+        hud_surf.fill((20, 14, 30, 180))
+        self.screen.blit(hud_surf, (0, 0))
+        pygame.draw.line(self.screen, (70, 52, 85),
+                         (0, hud_h), (SCREEN_W, hud_h), 1)
 
-        # Stav hráče – prominentní info bar
-        stat_y = h - 80
-        draw_text_left(self.screen, f"Lv.{self.player.level}",
-                       self.f_sm, GOLD, 15, stat_y)
+        # Level
+        draw_text_left(self.screen, f"Lv. {self.player.level}",
+                       self.f_md, GOLD, 15, 14)
+
+        # HP bar
+        hp_bar_x, hp_bar_y, hp_bar_w, hp_bar_h = 110, 10, 200, 14
         hp_ratio = self.player.hp / max(1, self.player.max_hp)
+        draw_text_left(self.screen, "❤", self.f_sm, (210, 55, 55),
+                       hp_bar_x - 2, hp_bar_y + 14)
+        pygame.draw.rect(self.screen, (30, 22, 40),
+                         (hp_bar_x, hp_bar_y, hp_bar_w, hp_bar_h),
+                         border_radius=4)
         hp_col = ((70, 200, 80) if hp_ratio > 0.5
                   else (220, 190, 40) if hp_ratio > 0.25
                   else (210, 55, 55))
+        if hp_ratio > 0:
+            pygame.draw.rect(self.screen, hp_col,
+                             (hp_bar_x, hp_bar_y,
+                              int(hp_bar_w * hp_ratio), hp_bar_h),
+                             border_radius=4)
         draw_text_left(self.screen,
-                       f"❤ {self.player.hp}/{self.player.max_hp}",
-                       self.f_sm, hp_col, 95, stat_y)
+                       f"{self.player.hp}/{self.player.max_hp}",
+                       self.f_xs, WHITE,
+                       hp_bar_x + 4, hp_bar_y - 1)
+
+        # XP bar
+        xp_bar_x, xp_bar_y, xp_bar_w, xp_bar_h = 110, 30, 200, 10
+        xp_ratio = self.player.xp / max(1, self.player.xp_to_next)
+        draw_text_left(self.screen, "✦", self.f_xs, SILVER,
+                       xp_bar_x - 2, xp_bar_y + 6)
+        pygame.draw.rect(self.screen, (30, 22, 40),
+                         (xp_bar_x, xp_bar_y, xp_bar_w, xp_bar_h),
+                         border_radius=3)
+        if xp_ratio > 0:
+            pygame.draw.rect(self.screen, (100, 140, 220),
+                             (xp_bar_x, xp_bar_y,
+                              int(xp_bar_w * min(1.0, xp_ratio)), xp_bar_h),
+                             border_radius=3)
         draw_text_left(self.screen,
-                       f"✦ XP {self.player.xp}/{self.player.xp_to_next}",
-                       self.f_sm, SILVER, 250, stat_y)
-        draw_text_left(self.screen,
-                       f"💰 {self.player.gold}",
-                       self.f_sm, GOLD, 430, stat_y)
+                       f"{self.player.xp}/{self.player.xp_to_next}",
+                       self.f_xs, SILVER,
+                       xp_bar_x + 4, xp_bar_y - 2)
+
+        # Gold
+        draw_text_left(self.screen, f"💰  {self.player.gold}",
+                       self.f_sm, GOLD, 330, 14)
+
+        # Název místa
+        draw_text_centered(self.screen, "⛺  Základní kemp",
+                           self.f_md, GOLD, cx, h - 105)
 
         mouse = pygame.mouse.get_pos()
 
         # Inventář tlačítko – pravý horní roh
         self.btn_inventory.draw(self.screen, mouse)
-        # Zlato vedle inventáře
-        draw_text_left(self.screen, f"💰 {self.player.gold}",
-                       self.f_xs, GOLD, SCREEN_W - 320, 56)
 
         # Stats tlačítko – pravý horní roh
         self.btn_stats.draw(self.screen, mouse)
@@ -1800,19 +1852,20 @@ class Game:
 
         # Uložíme rect slotů pro event handling
         self._inv_slot_rects: dict[str, pygame.Rect] = {}
-        hovered_slot = None
+        active_slot = self._inv_selected_slot  # vybraný slot (kliknutím)
         for slot_name, (sx, sy) in slot_positions.items():
             rect = pygame.Rect(sx, sy, slot_size, slot_size)
             self._inv_slot_rects[slot_name] = rect
             equipped = self.player.equipment.get(slot_name)
+            is_selected = (slot_name == active_slot and equipped)
 
-            bg = (55, 45, 70) if equipped else (30, 22, 40)
-            if rect.collidepoint(mouse):
-                hovered_slot = slot_name
+            bg = (80, 65, 30) if is_selected else (55, 45, 70) if equipped else (30, 22, 40)
+            if rect.collidepoint(mouse) and equipped:
                 bg = tuple(min(255, c + 20) for c in bg)
 
             pygame.draw.rect(self.screen, bg, rect, border_radius=8)
-            pygame.draw.rect(self.screen, (90, 70, 110), rect, 2, border_radius=8)
+            border_col = GOLD if is_selected else (90, 70, 110)
+            pygame.draw.rect(self.screen, border_col, rect, 2, border_radius=8)
 
             info = EQUIPMENT_SLOT_INFO[slot_name]
             if equipped:
@@ -1826,38 +1879,46 @@ class Game:
                                icon_col, sx + slot_size // 2,
                                sy + slot_size // 2)
 
-        # Tooltip výzbroje + tlačítko Sundat
+        # Detail vybraného slotu + tlačítko Sundat
         tooltip_y = base_y + 5 * row_h + 12
-        if hovered_slot:
-            info = EQUIPMENT_SLOT_INFO[hovered_slot]
-            equipped = self.player.equipment.get(hovered_slot)
-            if equipped:
-                tip = f"{info[1]}: {equipped.get('name', '?')}"
-                draw_text_centered(self.screen, tip, self.f_xs,
-                                   TEXT_LT, ecx, tooltip_y)
-                # Bonusy nasazeného předmětu
-                bonuses = equipped.get("stat_bonuses", {})
-                if bonuses:
-                    parts = []
-                    for stat, val in bonuses.items():
-                        label = self._STAT_LABELS.get(stat, stat)
-                        parts.append(f"+{val} {label}")
-                    draw_text_centered(self.screen, "  ".join(parts),
-                                       self.f_xs, CORRECT_COLOR,
-                                       ecx, tooltip_y + 16)
-                # Tlačítko Sundat
-                ubtn_x = ecx - 60
-                ubtn_y = tooltip_y + 32
-                self._inv_unequip_btn.rect.topleft = (ubtn_x, ubtn_y)
-                self._inv_unequip_btn.enabled = len(self.player.inventory) < 12
-                self._inv_unequip_btn._slot = hovered_slot  # type: ignore[attr-defined]
-                self._inv_unequip_btn.draw(self.screen, mouse)
-            else:
-                tip = f"{info[1]}: prázdné"
-                draw_text_centered(self.screen, tip, self.f_xs,
-                                   TEXT_LT, ecx, tooltip_y)
+        if active_slot and self.player.equipment.get(active_slot):
+            equipped = self.player.equipment[active_slot]
+            info = EQUIPMENT_SLOT_INFO[active_slot]
+            tip = f"{info[1]}: {equipped.get('name', '?')}"
+            draw_text_centered(self.screen, tip, self.f_xs,
+                               TEXT_LT, ecx, tooltip_y)
+            # Bonusy nasazeného předmětu
+            bonuses = equipped.get("stat_bonuses", {})
+            if bonuses:
+                parts = []
+                for stat, val in bonuses.items():
+                    label = self._STAT_LABELS.get(stat, stat)
+                    parts.append(f"+{val} {label}")
+                draw_text_centered(self.screen, "  ".join(parts),
+                                   self.f_xs, CORRECT_COLOR,
+                                   ecx, tooltip_y + 16)
+            # Tlačítko Sundat
+            ubtn_x = ecx - 60
+            ubtn_y = tooltip_y + 32
+            self._inv_unequip_btn.rect.topleft = (ubtn_x, ubtn_y)
+            self._inv_unequip_btn.enabled = len(self.player.inventory) < 12
+            self._inv_unequip_btn._slot = active_slot  # type: ignore[attr-defined]
+            self._inv_unequip_btn.draw(self.screen, mouse)
         else:
             self._inv_unequip_btn._slot = None  # type: ignore[attr-defined]
+            # Hover tooltip pro nepřiřazený slot
+            for slot_name, (sx, sy) in slot_positions.items():
+                rect = pygame.Rect(sx, sy, slot_size, slot_size)
+                if rect.collidepoint(mouse):
+                    info = EQUIPMENT_SLOT_INFO[slot_name]
+                    equipped = self.player.equipment.get(slot_name)
+                    if equipped:
+                        tip = f"{info[1]}: {equipped.get('name', '?')}"
+                    else:
+                        tip = f"{info[1]}: prázdné"
+                    draw_text_centered(self.screen, tip, self.f_xs,
+                                       TEXT_LT, ecx, tooltip_y)
+                    break
 
         # === PRAVÁ STRANA: Mřížka předmětů 3×4 ===
         grid_cx = 635
